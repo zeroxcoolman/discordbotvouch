@@ -51,18 +51,14 @@ def set_vouches(user_id, count):
     c.execute("INSERT INTO vouches (user_id, vouch_count, tracking_enabled) VALUES (?, ?, 1) ON CONFLICT(user_id) DO UPDATE SET vouch_count = ?", (user_id, count, count))
     conn.commit()
 
+def clear_vouches(user_id):
+    c.execute("UPDATE vouches SET vouch_count = 0 WHERE user_id = ?", (user_id,))
+    conn.commit()
+
 def is_tracking_enabled(user_id):
     c.execute("SELECT tracking_enabled FROM vouches WHERE user_id = ?", (user_id,))
     result = c.fetchone()
     return result[0] == 1 if result else False
-
-def enable_tracking(user_id):
-    c.execute("INSERT INTO vouches (user_id, tracking_enabled) VALUES (?, 1) ON CONFLICT(user_id) DO UPDATE SET tracking_enabled = 1", (user_id,))
-    conn.commit()
-
-def disable_tracking(user_id):
-    c.execute("UPDATE vouches SET tracking_enabled = 0 WHERE user_id = ?", (user_id,))
-    conn.commit()
 
 async def update_nickname(member):
     if is_tracking_enabled(member.id):
@@ -75,66 +71,24 @@ async def update_nickname(member):
             await member.edit(nick=new_nick)
         except discord.Forbidden:
             await member.send("I don't have permission to change your nickname!")
-        except Exception as e:
-            await member.send(f"An error occurred while updating your nickname: {e}")
 
-@bot.event
-async def on_ready():
-    print(f"Logged in as {bot.user}")
-
-@bot.event
-async def on_command_error(ctx, error):
-    if isinstance(error, commands.CommandNotFound):
-        await ctx.send("Unknown command! Use `!help` to see available commands.")
+@bot.command()
+async def clearvouches(ctx, member: discord.Member):
+    if any(role.name in ["Administrator™🌟", "𝓞𝔀𝓷𝓮𝓻 👑", "𓂀 𝒞𝑜-𝒪𝓌𝓃𝑒𝓇 𓂀✅"] for role in ctx.author.roles):
+        clear_vouches(member.id)
+        await update_nickname(member)
+        await ctx.send(f"{member.mention}'s vouches have been cleared.")
     else:
-        await ctx.send(f"An error occurred: {error}")
+        await ctx.send("You don't have permission to use this command!")
 
 @bot.command()
-async def enablevouch(ctx):
-    try:
-        if "Administrator™🌟" not in [role.name for role in ctx.author.roles] and "𝓞𝔀𝓷𝓮𝓻 👑" not in [role.name for role in ctx.author.roles] and "𓂀 𝒞𝑜-𝒪𝓌𝓃𝑒𝓇 𓂀✅" not in [role.name for role in ctx.author.roles]:
-            if ctx.channel.name != "✅︱𝑽𝒐𝒖𝒄𝒉𝒆𝒔":
-                await ctx.send("This command can only be used in #✅︱𝑽𝒐𝒖𝒄𝒉𝒆𝒔.")
-                return
-        enable_tracking(ctx.author.id)
-        await ctx.send(f"Vouch tracking enabled for {ctx.author.mention}!")
-    except Exception as e:
-        await ctx.send(f"An error occurred while enabling vouch tracking: {e}")
-
-@bot.command()
-async def disablevouch(ctx):
-    try:
-        if "Administrator™🌟" not in [role.name for role in ctx.author.roles] and "𝓞𝔀𝓷𝓮𝓻 👑" not in [role.name for role in ctx.author.roles] and "𓂀 𝒞𝑜-𝒪𝓌𝓃𝑒𝓇 𓂀✅" not in [role.name for role in ctx.author.roles]:
-            if ctx.channel.name != "✅︱𝑽𝒐𝒖𝒄𝒉𝒆𝒔":
-                await ctx.send("This command can only be used in #✅︱𝑽𝒐𝒖𝒄𝒉𝒆𝒔.")
-                return
-        disable_tracking(ctx.author.id)
-        await ctx.send(f"Vouch tracking disabled for {ctx.author.mention}!")
-    except Exception as e:
-        await ctx.send(f"An error occurred while disabling vouch tracking: {e}")
-
-@bot.command()
-async def vouch(ctx, member: discord.Member):
-    try:
-        if "Administrator™🌟" not in [role.name for role in ctx.author.roles] and "𝓞𝔀𝓷𝓮𝓻 👑" not in [role.name for role in ctx.author.roles] and "𓂀 𝒞𝑜-𝒪𝓌𝓃𝑒𝓇 𓂀✅" not in [role.name for role in ctx.author.roles]:
-            if ctx.channel.name != "✅︱𝑽𝒐𝒖𝒄𝒉𝒆𝒔":
-                await ctx.send("This command can only be used in #✅︱𝑽𝒐𝒖𝒄𝒉𝒆𝒔.")
-                return
-        if ctx.author == member:
-            await ctx.send("You cannot vouch for yourself!")
-            return
-        if not is_tracking_enabled(member.id):
-            await ctx.send(f"{member.mention} has not enabled vouch tracking!")
-            return
-        count = get_vouches(member.id) + 1
+async def setvouches(ctx, member: discord.Member, count: int):
+    if any(role.name in ["Administrator™🌟", "𝓞𝔀𝓷𝓮𝓻 👑", "𓂀 𝒞𝑜-𝒪𝓌𝓃𝑒𝓻 𓂀✅"] for role in ctx.author.roles):
         set_vouches(member.id, count)
         await update_nickname(member)
-        log_channel = discord.utils.get(ctx.guild.channels, name="✅︱𝑽𝒐𝒖𝒄𝒉𝒆𝒔")
-        if log_channel:
-            await log_channel.send(f"{member.mention} has been vouched by {ctx.author.mention}. New total: {count}")
-        await ctx.send(f"{member.mention} now has {count} vouches!")
-    except Exception as e:
-        await ctx.send(f"An error occurred while processing the vouch: {e}")
+        await ctx.send(f"{member.mention}'s vouches have been set to {count}.")
+    else:
+        await ctx.send("You don't have permission to use this command!")
 
 keep_alive()
 bot.run(TOKEN)
