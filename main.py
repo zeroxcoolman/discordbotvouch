@@ -20,7 +20,9 @@ def keep_alive():
     t.start()
 
 # Setup bot
-TOKEN = os.environ['DISCORD_TOKEN']  # Get the token from environment variable
+TOKEN = os.environ.get('DISCORD_TOKEN')  # Get the token from environment variable
+if TOKEN is None:
+    raise ValueError("There is no discord token")
 intents = discord.Intents.default()
 intents.guilds = True
 intents.messages = True
