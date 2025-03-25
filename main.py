@@ -12,7 +12,8 @@ def home():
     return "Bot is running!"
 
 def run():
-    app.run(host="0.0.0.0", port=8080)
+    PORT = int(os.environ.get("PORT", 8080))
+    app.run(host="0.0.0.0", port=PORT)
 
 def keep_alive():
     t = Thread(target=run)
