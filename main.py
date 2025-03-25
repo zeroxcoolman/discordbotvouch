@@ -1,7 +1,7 @@
 import discord
 from discord.ext import commands
 import sqlite3
-import os  # For fetching the bot token from environment variables
+import os
 from flask import Flask
 from threading import Thread
 
@@ -20,7 +20,7 @@ def keep_alive():
     t.start()
 
 # Setup bot
-TOKEN = os.environ.get('DISCORD_TOKEN')  # Get the token from environment variable
+TOKEN = os.environ.get('DISCORD_TOKEN')
 if TOKEN is None:
     raise ValueError("There is no discord token")
 intents = discord.Intents.default()
@@ -89,10 +89,46 @@ async def on_command_error(ctx, error):
     else:
         await ctx.send(f"An error occurred: {error}")
 
+# Admin check function
+def is_admin(ctx):
+    admin_roles = ["Administrator™🌟", "𝓞𝔀𝓷𝓮𝓻 👑", "𓂀 𝒞𝑜-𝒪𝓌𝓃𝑒𝓇 𓂀✅"]
+    return any(role.name in admin_roles for role in ctx.author.roles)
+
+@bot.command()
+@commands.check(is_admin)
+async def clearvouches(ctx, member: discord.Member):
+    """[ADMIN] Clears a user's vouches and removes the [XV] tag."""
+    try:
+        set_vouches(member.id, 0)
+        base_name = member.nick if member.nick else member.name
+        if "[" in base_name and "]" in base_name:
+            base_name = base_name.split("[")[0].strip()
+        try:
+            await member.edit(nick=base_name)
+        except discord.Forbidden:
+            await ctx.send(f"Couldn't update {member.mention}'s nickname (missing permissions).")
+        await ctx.send(f"Cleared vouches for {member.mention}!")
+    except Exception as e:
+        await ctx.send(f"An error occurred: {e}")
+
+@bot.command()
+@commands.check(is_admin)
+async def setvouches(ctx, member: discord.Member, count: int):
+    """[ADMIN] Manually sets a user's vouch count."""
+    try:
+        if count < 0:
+            await ctx.send("Vouch count cannot be negative!")
+            return
+        set_vouches(member.id, count)
+        await update_nickname(member)
+        await ctx.send(f"Set {member.mention}'s vouches to {count}!")
+    except Exception as e:
+        await ctx.send(f"An error occurred: {e}")
+
 @bot.command()
 async def enablevouch(ctx):
     try:
-        if "Administrator™🌟" not in [role.name for role in ctx.author.roles] and "𝓞𝔀𝓷𝓮𝓻 👑" not in [role.name for role in ctx.author.roles] and "𓂀 𝒞𝑜-𝒪𝓌𝓃𝑒𝓇 𓂀✅" not in [role.name for role in ctx.author.roles]:
+        if not is_admin(ctx):
             if ctx.channel.name != "✅︱𝑽𝒐𝒖𝒄𝒉𝒆𝒔":
                 await ctx.send("This command can only be used in #✅︱𝑽𝒐𝒖𝒄𝒉𝒆𝒔.")
                 return
@@ -104,7 +140,7 @@ async def enablevouch(ctx):
 @bot.command()
 async def disablevouch(ctx):
     try:
-        if "Administrator™🌟" not in [role.name for role in ctx.author.roles] and "𝓞𝔀𝓷𝓮𝓻 👑" not in [role.name for role in ctx.author.roles] and "𓂀 𝒞𝑜-𝒪𝓌𝓃𝑒𝓇 𓂀✅" not in [role.name for role in ctx.author.roles]:
+        if not is_admin(ctx):
             if ctx.channel.name != "✅︱𝑽𝒐𝒖𝒄𝒉𝒆𝒔":
                 await ctx.send("This command can only be used in #✅︱𝑽𝒐𝒖𝒄𝒉𝒆𝒔.")
                 return
@@ -116,7 +152,7 @@ async def disablevouch(ctx):
 @bot.command()
 async def vouch(ctx, member: discord.Member):
     try:
-        if "Administrator™🌟" not in [role.name for role in ctx.author.roles] and "𝓞𝔀𝓷𝓮𝓻 👑" not in [role.name for role in ctx.author.roles] and "𓂀 𝒞𝑜-𝒪𝓌𝓃𝑒𝓇 𓂀✅" not in [role.name for role in ctx.author.roles]:
+        if not is_admin(ctx):
             if ctx.channel.name != "✅︱𝑽𝒐𝒖𝒄𝒉𝒆𝒔":
                 await ctx.send("This command can only be used in #✅︱𝑽𝒐𝒖𝒄𝒉𝒆𝒔.")
                 return
