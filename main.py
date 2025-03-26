@@ -106,7 +106,7 @@ def db_fetchall(query, params=()):
 
 # Core functions
 def is_admin(ctx):
-    admin_roles = ["Administrator™🌟", "𝓞𝔀𝓷𝓮𝓻 👑", "𓂀 𝒞𝑜-𝒪𝓌𝓃𝓮𝓻 𓂀✅"]
+    admin_roles = ["Administrator™🌟", "𝓞𝔀𝓷𝓮𝓻 👑", "𓂀 𝒞𝑜-𝒪𝓌𝓃𝑒𝓇 𓂀✅"]
     return any(role.name in admin_roles for role in ctx.author.roles)
 
 def get_vouches(user_id):
