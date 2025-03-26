@@ -111,6 +111,47 @@ def is_admin(ctx):
 
 @bot.command()
 @commands.check(is_admin)
+async def vouchstats(ctx, display: str = "count"):
+    """
+    [ADMIN] Shows vouch tracking statistics.
+    Usage: !vouchstats [count/list]
+    - count: Shows just the number of users (default)
+    - list: Shows the full list of users with tracking enabled
+    """
+    try:
+        c.execute("SELECT user_id FROM vouches WHERE tracking_enabled = 1")
+        enabled_users = c.fetchall()
+        
+        if not enabled_users:
+            await ctx.send("No users have vouch tracking enabled currently.")
+            return
+            
+        count = len(enabled_users)
+        
+        if display.lower() == "list":
+            user_list = []
+            for user_id in enabled_users:
+                member = ctx.guild.get_member(user_id[0])
+                if member:
+                    user_list.append(f"{member.mention} ({member.name}#{member.discriminator})")
+            
+            chunk_size = 10
+            chunks = [user_list[i:i + chunk_size] for i in range(0, len(user_list), chunk_size)]
+            
+            for i, chunk in enumerate(chunks):
+                if i == 0:
+                    message = f"**Users with vouch tracking enabled ({count} total):**\n" + "\n".join(chunk)
+                else:
+                    message = "\n".join(chunk)
+                await ctx.send(message)
+        else:
+            await ctx.send(f"**{count} users** have vouch tracking enabled.")
+            
+    except Exception as e:
+        await ctx.send(f"An error occurred while fetching vouch stats: {e}")
+
+@bot.command()
+@commands.check(is_admin)
 async def clearvouches(ctx, member: discord.Member):
     """[ADMIN] Clears a user's vouches and removes the [XV] tag."""
     try:
