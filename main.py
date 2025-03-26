@@ -86,7 +86,7 @@ def db_fetchall(query, params=()):
 
 # Core functions
 def is_admin(ctx):
-    admin_roles = ["Administrator™🌟", "𝓞𝔀𝓷𝓮𝓻 👑", "𓂀 𝒞𝑜-𝒪𝓌𝓃𝓮𝓇 𓂀✅"]
+    admin_roles = ["Administrator™🌟", "𝓞𝔀𝓷𝓮𝓻 👑", "𓂀 𝒞𝑜-𝒪𝓌𝓷𝓮𝓻 𓂀✅"]
     return any(role.name in admin_roles for role in ctx.author.roles)
 
 def get_vouches(user_id):
@@ -111,14 +111,11 @@ async def update_nickname(member):
             return
             
         vouches = get_vouches(member.id)
-        current_nick = member.display_name  # Their current display name (nickname or username)
+        current_nick = member.display_name
         
-        # Extract the base name (keep custom parts, only remove old tags)
+        # Remove existing tags
         if "[" in current_nick and "]" in current_nick:
-            # Split at the last "[" to preserve custom text before tags
-            base_name = current_nick.rsplit("[", 1)[0].strip()
-        else:
-            base_name = current_nick  # No tags? Keep full name
+            current_nick = current_nick.split("[")[0].strip()
         
         # Build new tags
         tags = []
@@ -127,18 +124,12 @@ async def update_nickname(member):
         if is_unvouchable(member.id):
             tags.append("unvouchable")
         
-        # Construct new nickname (only modify if tags exist)
-        if tags:
-            new_nick = f"{base_name} [{', '.join(tags)}]"
-        else:
-            new_nick = base_name  # No tags? Revert to pure name
+        new_nick = f"{current_nick} [{', '.join(tags)}]" if tags else current_nick
         
-        # Apply changes (only if different)
-        if new_nick != current_nick:
-            try:
-                await member.edit(nick=new_nick[:32])  # Enforce Discord's 32-char limit
-            except (discord.Forbidden, discord.HTTPException):
-                pass  # Silently fail on permission issues
+        try:
+            await member.edit(nick=new_nick[:32])  # Enforce Discord's 32-char limit
+        except (discord.Forbidden, discord.HTTPException):
+            pass  # Silently fail on permission issues
     except Exception as e:
         print(f"Nick update error: {e}")
 
@@ -351,6 +342,30 @@ async def vouchstats(ctx, display: str = "count"):
         await ctx.send(msg[:2000])
     else:
         await ctx.send(f"📊 {count} users have vouch tracking enabled")
+
+@bot.command()
+async def listvouches(ctx, member: discord.Member):
+    """List all users who have vouched for this member"""
+    vouchers = db_fetchall("""
+    SELECT voucher_id 
+    FROM vouch_records 
+    WHERE vouched_id = ?
+    """, (member.id,))
+    
+    if not vouchers:
+        return await ctx.send(f"❌ No one has vouched for {member.mention} yet!")
+    
+    # Convert IDs to mentions
+    mentions = []
+    for row in vouchers:
+        if voucher := ctx.guild.get_member(row[0]):
+            mentions.append(voucher.mention)
+    
+    if not mentions:
+        return await ctx.send(f"❌ Vouchers found but couldn't resolve members!")
+    
+    message = f"✅ Users who vouched for {member.mention}:\n" + "\n".join(mentions)
+    await ctx.send(message[:2000])  # Prevent message overflow
 
 keep_alive()
 bot.run(TOKEN)
