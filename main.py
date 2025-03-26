@@ -82,10 +82,15 @@ def record_vouch(voucher_id, vouched_id):
 async def update_nickname(member):
     if is_tracking_enabled(member.id):
         vouches = get_vouches(member.id)
-        base_name = member.nick if member.nick else member.name
-        if "[" in base_name and "]" in base_name:
-            base_name = base_name.split("[")[0].strip()
-        new_nick = f"{base_name} [{vouches}V]"
+        current_nick = member.nick or member.name
+        
+        # Remove any existing [XV] tag
+        if "[" in current_nick and "]" in current_nick:
+            current_nick = current_nick.split("[")[0].strip()
+        
+        # Only add [XV] if vouches > 0
+        new_nick = f"{current_nick} [{vouches}V]" if vouches > 0 else current_nick
+        
         try:
             await member.edit(nick=new_nick)
         except discord.Forbidden:
@@ -128,7 +133,6 @@ async def vouchstats(ctx, display: str = "count"):
         count = len(enabled_users)
         
         if display.lower() == "list":
-            # Check if user is admin for the list version
             if not is_admin(ctx):
                 await ctx.send("Only admins can view the full list of users with vouch tracking enabled.")
                 return
@@ -163,13 +167,14 @@ async def clearvouches(ctx, member: discord.Member):
         c.execute("DELETE FROM vouch_records WHERE vouched_id = ?", (member.id,))
         conn.commit()
         
-        base_name = member.nick if member.nick else member.name
-        if "[" in base_name and "]" in base_name:
-            base_name = base_name.split("[")[0].strip()
-        try:
-            await member.edit(nick=base_name)
-        except discord.Forbidden:
-            await ctx.send(f"Couldn't update {member.mention}'s nickname (missing permissions).")
+        current_nick = member.nick or member.name
+        if "[" in current_nick and "]" in current_nick:
+            new_nick = current_nick.split("[")[0].strip()
+            try:
+                await member.edit(nick=new_nick)
+            except discord.Forbidden:
+                await ctx.send(f"Couldn't update {member.mention}'s nickname (missing permissions).")
+        
         await ctx.send(f"Cleared vouches for {member.mention}!")
     except Exception as e:
         await ctx.send(f"An error occurred: {e}")
@@ -185,13 +190,13 @@ async def clearvouches_all(ctx):
         
         for member in ctx.guild.members:
             if is_tracking_enabled(member.id):
-                base_name = member.nick if member.nick else member.name
-                if "[" in base_name and "]" in base_name:
-                    base_name = base_name.split("[")[0].strip()
-                try:
-                    await member.edit(nick=base_name)
-                except discord.Forbidden:
-                    pass
+                current_nick = member.nick or member.name
+                if "[" in current_nick and "]" in current_nick:
+                    new_nick = current_nick.split("[")[0].strip()
+                    try:
+                        await member.edit(nick=new_nick)
+                    except discord.Forbidden:
+                        pass
         
         await ctx.send("Cleared all vouches for all users!")
     except Exception as e:
@@ -206,7 +211,7 @@ async def setvouches(ctx, member: discord.Member, count: int):
             await ctx.send("Vouch count cannot be negative!")
             return
         set_vouches(member.id, count)
-        await update_nickname(member)
+        await update_nickname(member)  # This will now handle the 0V case properly
         await ctx.send(f"Set {member.mention}'s vouches to {count}!")
     except Exception as e:
         await ctx.send(f"An error occurred: {e}")
@@ -220,6 +225,7 @@ async def enablevouch(ctx):
                 await ctx.send("This command can only be used in #✅︱𝑽𝒐𝒖𝒄𝒉𝒆𝒔.")
                 return
         enable_tracking(ctx.author.id)
+        await update_nickname(ctx.author)
         await ctx.send(f"Vouch tracking enabled for {ctx.author.mention}!")
     except Exception as e:
         await ctx.send(f"An error occurred while enabling vouch tracking: {e}")
@@ -238,6 +244,7 @@ async def enablevouches_all(ctx):
                 
             if not is_tracking_enabled(member.id):
                 enable_tracking(member.id)
+                await update_nickname(member)
                 count += 1
         
         await ctx.send(f"Enabled vouch tracking for {count} members!")
@@ -253,6 +260,13 @@ async def disablevouch(ctx):
                 await ctx.send("This command can only be used in #✅︱𝑽𝒐𝒖𝒄𝒉𝒆𝒔.")
                 return
         disable_tracking(ctx.author.id)
+        current_nick = ctx.author.nick or ctx.author.name
+        if "[" in current_nick and "]" in current_nick:
+            new_nick = current_nick.split("[")[0].strip()
+            try:
+                await ctx.author.edit(nick=new_nick)
+            except discord.Forbidden:
+                pass
         await ctx.send(f"Vouch tracking disabled for {ctx.author.mention}!")
     except Exception as e:
         await ctx.send(f"An error occurred while disabling vouch tracking: {e}")
@@ -266,15 +280,14 @@ async def disablevouches_all(ctx):
         for member in ctx.guild.members:
             if is_tracking_enabled(member.id):
                 disable_tracking(member.id)
+                current_nick = member.nick or member.name
+                if "[" in current_nick and "]" in current_nick:
+                    new_nick = current_nick.split("[")[0].strip()
+                    try:
+                        await member.edit(nick=new_nick)
+                    except discord.Forbidden:
+                        pass
                 count += 1
-                
-                base_name = member.nick if member.nick else member.name
-                if "[" in base_name and "]" in base_name:
-                    base_name = base_name.split("[")[0].strip()
-                try:
-                    await member.edit(nick=base_name)
-                except discord.Forbidden:
-                    pass
         
         await ctx.send(f"Disabled vouch tracking for {count} members!")
     except Exception as e:
