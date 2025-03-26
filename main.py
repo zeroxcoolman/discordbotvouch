@@ -45,7 +45,8 @@ CREATE TABLE IF NOT EXISTS vouch_records (
     voucher_id INTEGER,
     vouched_id INTEGER,
     PRIMARY KEY (voucher_id, vouched_id)
-""")
+)
+""")  # Added the missing closing parenthesis here
 conn.commit()
 
 def get_vouches(user_id):
