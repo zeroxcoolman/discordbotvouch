@@ -2,8 +2,6 @@ import discord
 from discord.ext import commands
 import sqlite3
 import os
-import time
-import asyncio
 from flask import Flask
 from threading import Thread
 
@@ -31,12 +29,10 @@ intents.messages = True
 intents.message_content = True
 intents.members = True
 bot = commands.Bot(command_prefix="!", intents=intents)
-bot.vouch_spam = {}  # Anti-spam tracking
 
 # Database setup with error handling
 def get_db():
-    conn = sqlite3.connect("vouches.db", timeout=30, isolation_level=None)
-    conn.execute("PRAGMA busy_timeout = 30000")
+    conn = sqlite3.connect("vouches.db", timeout=10, isolation_level=None)
     conn.row_factory = sqlite3.Row
     return conn
 
@@ -59,22 +55,6 @@ def init_db():
         conn.execute("""
         CREATE TABLE IF NOT EXISTS unvouchable_users (
             user_id INTEGER PRIMARY KEY
-        )
-        """)
-        # New tables for enhancements:
-        conn.execute("""
-        CREATE TABLE IF NOT EXISTS vouch_cooldowns (
-            user_id INTEGER PRIMARY KEY,
-            last_vouch_time INTEGER
-        )
-        """)
-        conn.execute("""
-        CREATE TABLE IF NOT EXISTS vouch_reasons (
-            voucher_id INTEGER,
-            vouched_id INTEGER,
-            reason TEXT,
-            timestamp INTEGER,
-            PRIMARY KEY (voucher_id, vouched_id)
         )
         """)
 
@@ -131,29 +111,34 @@ async def update_nickname(member):
             return
             
         vouches = get_vouches(member.id)
-        current_nick = member.display_name
+        current_nick = member.display_name  # Their current display name (nickname or username)
         
+        # Extract the base name (keep custom parts, only remove old tags)
         if "[" in current_nick and "]" in current_nick:
+            # Split at the last "[" to preserve custom text before tags
             base_name = current_nick.rsplit("[", 1)[0].strip()
         else:
-            base_name = current_nick
+            base_name = current_nick  # No tags? Keep full name
         
+        # Build new tags
         tags = []
         if vouches > 0:
             tags.append(f"{vouches}V")
         if is_unvouchable(member.id):
             tags.append("unvouchable")
         
+        # Construct new nickname (only modify if tags exist)
         if tags:
-            new_nick = f"{base_name} [{', '.join(tags)}]".replace("[", "［").replace("]", "］")
+            new_nick = f"{base_name} [{', '.join(tags)}]"
         else:
-            new_nick = base_name
+            new_nick = base_name  # No tags? Revert to pure name
         
+        # Apply changes (only if different)
         if new_nick != current_nick:
             try:
-                await member.edit(nick=new_nick[:32])
+                await member.edit(nick=new_nick[:32])  # Enforce Discord's 32-char limit
             except (discord.Forbidden, discord.HTTPException):
-                pass
+                pass  # Silently fail on permission issues
     except Exception as e:
         print(f"Nick update error: {e}")
 
@@ -173,7 +158,7 @@ async def on_command_error(ctx, error):
         print(f"Command error: {error}")
 
 # ========================
-# YOUR ORIGINAL COMMANDS (EXACTLY AS YOU HAD THEM)
+# CORE COMMANDS
 # ========================
 
 @bot.command()
@@ -210,31 +195,15 @@ async def unvouchable_list(ctx):
     members = [m for m in members if m]
     
     msg = "🔒 Unvouchable Users:\n" + "\n".join(f"{m.mention} ({m.display_name})" for m in members)
-    await ctx.send(msg[:2000])
+    await ctx.send(msg[:2000])  # Prevent message overflow
 
 @bot.command()
-async def vouch(ctx, member: discord.Member, *, reason: str = "No reason provided"):
-    """Vouch for a user (now with cooldown and reason)"""
+async def vouch(ctx, member: discord.Member):
+    """Vouch for a user"""
     try:
         admin = is_admin(ctx)
         
-        # Anti-spam check
-        if not admin:
-            if ctx.author.id in bot.vouch_spam:
-                if bot.vouch_spam[ctx.author.id] >= 3:
-                    return await ctx.send("❌ You're vouching too fast!")
-                bot.vouch_spam[ctx.author.id] += 1
-            else:
-                bot.vouch_spam[ctx.author.id] = 1
-            
-            # Cooldown check
-            cooldown = db_fetchone("SELECT last_vouch_time FROM vouch_cooldowns WHERE user_id = ?", (ctx.author.id,))
-            if cooldown and cooldown[0]:
-                remaining = 24 - (time.time() - cooldown[0])//3600
-                if remaining > 0:
-                    return await ctx.send(f"❌ You can vouch again in {int(remaining)} hours!")
-        
-        # Original validations
+        # Validations (unless admin)
         if not admin:
             if ctx.channel.name != "✅︱𝑽𝒐𝒖𝒄𝒉𝒆𝒔":
                 return await ctx.send("❌ Use the vouch channel!")
@@ -258,27 +227,9 @@ async def vouch(ctx, member: discord.Member, *, reason: str = "No reason provide
         if not admin:
             if not db_execute("INSERT INTO vouch_records VALUES (?, ?)", (ctx.author.id, member.id)):
                 return await ctx.send("❌ Database error!")
-            db_execute("""
-            INSERT INTO vouch_reasons VALUES (?, ?, ?, ?)
-            ON CONFLICT(voucher_id, vouched_id) DO UPDATE SET reason = ?, timestamp = ?
-            """, (ctx.author.id, member.id, reason, int(time.time()), reason, int(time.time())))
-            
-            # Update cooldown
-            db_execute("""
-            INSERT INTO vouch_cooldowns VALUES (?, ?)
-            ON CONFLICT(user_id) DO UPDATE SET last_vouch_time = ?
-            """, (ctx.author.id, int(time.time()), int(time.time())))
         
         await update_nickname(member)
-        await ctx.send(f"✅ {member.mention} now has {new_count} vouches! Reason: {reason[:50]}")
-        
-        # Schedule spam counter reset
-        if not admin:
-            await asyncio.sleep(60)
-            if ctx.author.id in bot.vouch_spam:
-                bot.vouch_spam[ctx.author.id] -= 1
-                if bot.vouch_spam[ctx.author.id] <= 0:
-                    del bot.vouch_spam[ctx.author.id]
+        await ctx.send(f"✅ {member.mention} now has {new_count} vouches!")
         
     except Exception as e:
         await ctx.send("❌ Failed to process vouch. Please try again.")
@@ -401,26 +352,24 @@ async def vouchstats(ctx, display: str = "count"):
     else:
         await ctx.send(f"📊 {count} users have vouch tracking enabled")
 
-# ========================
-# NEW ENHANCEMENTS (ADDED WITHOUT MODIFYING EXISTING CODE)
-# ========================
-
 @bot.command()
 async def verify(ctx, member: discord.Member = None):
     """Verify a user's vouch count is legitimate"""
-    await ctx.guild.chunk()  # Ensure member cache is fresh
     target = member or ctx.author
     
+    # Check unvouchable status first
     if is_unvouchable(target.id):
         vouch_count = get_vouches(target.id)
         return await ctx.send(f"🔒 {target.mention} is UNVOUCHABLE (Database shows {vouch_count} vouches)")
     
+    # Get their actual vouch count
     vouch_count = get_vouches(target.id)
     
+    # Check if they have no vouches
     if vouch_count == 0:
         return await ctx.send(f"❌ {target.mention} has no vouches in the database!")
     
-    # Parse displayed vouches
+    # Parse their current nickname for displayed vouches
     displayed_vouches = 0
     if "[" in target.display_name and "]" in target.display_name:
         tag_part = target.display_name.split("[")[-1].split("]")[0]
@@ -433,102 +382,34 @@ async def verify(ctx, member: discord.Member = None):
                 except ValueError:
                     continue
     
-    # Get verification data
-    legit_vouches = db_fetchall("SELECT COUNT(*) as count FROM vouch_records WHERE vouched_id = ?", (target.id,))
+    # Get all legitimate vouchers (non-admin vouches)
+    legit_vouches = db_fetchall("""
+    SELECT COUNT(*) as count 
+    FROM vouch_records 
+    WHERE vouched_id = ?
+    """, (target.id,))
+    
     legit_count = legit_vouches[0]['count'] if legit_vouches else 0
     
-    # Verification logic
-    fake_tags = (displayed_vouches > vouch_count)
-    nickname_valid = (displayed_vouches == vouch_count)
-    
-    if fake_tags:
-        verification = "🚨 FAKE TAGS DETECTED"
-    elif not nickname_valid:
-        verification = "⚠️ TAG DISCREPANCY"
-    elif legit_count == vouch_count:
-        verification = "✅ FULLY VERIFIED"
+    # Compare counts
+    if legit_count == vouch_count:
+        verification = "✅ FULLY VERIFIED (All vouches are from community members)"
     elif legit_count < vouch_count:
         admin_vouches = vouch_count - legit_count
-        verification = f"⚠️ {admin_vouches} ADMIN VOUCHES"
+        verification = f"⚠️ PARTIALLY ADMIN VERIFIED ({admin_vouches} vouches were admin-set)"
     else:
-        verification = "❌ DATABASE INCONSISTENCY"
+        verification = "❌ DATABASE INCONSISTENCY (More records than total vouches)"
     
     # Build response
     response = (
-        f"**Verification for {target.mention}**\n"
+        f"**Vouch Verification for {target.mention}**\n"
         f"• Displayed: {displayed_vouches}V\n"
         f"• Database: {vouch_count} vouches\n"
         f"• Community vouches: {legit_count}\n"
         f"• Status: {verification}"
     )
     
-    # Add voucher list for admins
-    if is_admin(ctx):
-        vouchers = db_fetchall("""
-        SELECT voucher_id, reason 
-        FROM vouch_records
-        LEFT JOIN vouch_reasons ON 
-            vouch_records.voucher_id = vouch_reasons.voucher_id AND
-            vouch_records.vouched_id = vouch_reasons.vouched_id
-        WHERE vouch_records.vouched_id = ?
-        """, (target.id,))
-        
-        if vouchers:
-            voucher_info = []
-            for row in vouchers:
-                user = ctx.guild.get_member(row['voucher_id'])
-                if user:
-                    reason = row['reason'] or "No reason"
-                    voucher_info.append(f"{user.mention} ({reason})")
-            
-            if voucher_info:
-                response += "\n\n**Vouched by:** " + ", ".join(voucher_info[:5])
-                if len(vouchers) > 5:
-                    response += f" (+{len(vouchers)-5} more)"
-    
-    await ctx.send(response[:2000])
-
-@bot.command()
-async def myvouches(ctx):
-    """Check your own vouch count and status"""
-    count = get_vouches(ctx.author.id)
-    cooldown = db_fetchone("SELECT last_vouch_time FROM vouch_cooldowns WHERE user_id = ?", (ctx.author.id,))
-    
-    msg = f"You have {count} legitimate vouches"
-    if cooldown and cooldown[0]:
-        remaining = max(0, 24 - (time.time() - cooldown[0])//3600)
-        if remaining > 0:
-            msg += f"\n⏳ You can vouch again in {int(remaining)} hours"
-    
-    await ctx.send(msg)
-
-@bot.command()
-async def vouchboard(ctx, limit: int = 10):
-    """Show top vouched members"""
-    top = db_fetchall("""
-    SELECT user_id, vouch_count 
-    FROM vouches 
-    WHERE tracking_enabled = 1
-    ORDER BY vouch_count DESC 
-    LIMIT ?
-    """, (limit,))
-    
-    msg = "🏆 Top Vouched Members:\n"
-    for i, row in enumerate(top, 1):
-        if member := ctx.guild.get_member(row['user_id']):
-            msg += f"{i}. {member.display_name}: {row['vouch_count']}V\n"
-    
-    await ctx.send(msg[:2000])
-
-@bot.command()
-@commands.check(is_admin)
-async def backup_db(ctx):
-    """[ADMIN] Create a database backup"""
-    try:
-        with open('vouches.db', 'rb') as f:
-            await ctx.send("Database backup:", file=discord.File(f, 'vouches_backup.db'))
-    except Exception as e:
-        await ctx.send(f"❌ Backup failed: {str(e)}")
+    await ctx.send(response)
 
 keep_alive()
 bot.run(TOKEN)
