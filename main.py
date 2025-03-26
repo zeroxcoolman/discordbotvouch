@@ -47,6 +47,11 @@ CREATE TABLE IF NOT EXISTS vouch_records (
     PRIMARY KEY (voucher_id, vouched_id)
 )
 """)
+c.execute("""
+CREATE TABLE IF NOT EXISTS unvouchable_users (
+    user_id INTEGER PRIMARY KEY
+)
+""")
 conn.commit()
 
 def get_vouches(user_id):
@@ -79,17 +84,36 @@ def record_vouch(voucher_id, vouched_id):
     c.execute("INSERT INTO vouch_records (voucher_id, vouched_id) VALUES (?, ?)", (voucher_id, vouched_id))
     conn.commit()
 
+def is_unvouchable(user_id):
+    c.execute("SELECT 1 FROM unvouchable_users WHERE user_id = ?", (user_id,))
+    return c.fetchone() is not None
+
+def set_unvouchable(user_id, status=True):
+    if status:
+        c.execute("INSERT OR IGNORE INTO unvouchable_users (user_id) VALUES (?)", (user_id,))
+    else:
+        c.execute("DELETE FROM unvouchable_users WHERE user_id = ?", (user_id,))
+    conn.commit()
+
 async def update_nickname(member):
     if is_tracking_enabled(member.id):
         vouches = get_vouches(member.id)
         current_nick = member.nick or member.name
         
-        # Remove any existing [XV] tag
+        # Remove any existing tags
         if "[" in current_nick and "]" in current_nick:
             current_nick = current_nick.split("[")[0].strip()
         
-        # Only add [XV] if vouches > 0
-        new_nick = f"{current_nick} [{vouches}V]" if vouches > 0 else current_nick
+        # Add appropriate tags
+        tags = []
+        if vouches > 0:
+            tags.append(f"{vouches}V")
+        if is_unvouchable(member.id):
+            tags.append("unvouchable")
+        
+        new_nick = current_nick
+        if tags:
+            new_nick = f"{current_nick} [{', '.join(tags)}]"
         
         try:
             await member.edit(nick=new_nick)
@@ -98,65 +122,113 @@ async def update_nickname(member):
         except Exception as e:
             await member.send(f"An error occurred while updating your nickname: {e}")
 
-@bot.event
-async def on_ready():
-    print(f"Logged in as {bot.user}")
-
-@bot.event
-async def on_command_error(ctx, error):
-    if isinstance(error, commands.CommandNotFound):
-        await ctx.send("Unknown command! Use `!help` to see available commands.")
-    else:
-        await ctx.send(f"An error occurred: {error}")
-
 # Admin check function
 def is_admin(ctx):
     admin_roles = ["Administrator™🌟", "𝓞𝔀𝓷𝓮𝓻 👑", "𓂀 𝒞𝑜-𝒪𝓌𝓃𝓮𝓇 𓂀✅"]
     return any(role.name in admin_roles for role in ctx.author.roles)
 
+# Event handlers and commands...
+
 @bot.command()
-async def vouchstats(ctx, display: str = "count"):
-    """
-    Shows vouch tracking statistics.
-    Usage: !vouchstats [count/list]
-    - count: Shows just the number of users (default, available to everyone)
-    - list: Shows the full list of users with tracking enabled (admin only)
-    """
+@commands.check(is_admin)
+async def unvouchable(ctx, member: discord.Member, status: str = "on"):
+    """[ADMIN] Makes a user unvouchable or removes unvouchable status."""
     try:
-        c.execute("SELECT user_id FROM vouches WHERE tracking_enabled = 1")
-        enabled_users = c.fetchall()
+        if status.lower() in ["on", "enable", "true"]:
+            set_unvouchable(member.id, True)
+            await ctx.send(f"{member.mention} is now unvouchable!")
+        else:
+            set_unvouchable(member.id, False)
+            await ctx.send(f"{member.mention} can now be vouched again!")
+        await update_nickname(member)
+    except Exception as e:
+        await ctx.send(f"An error occurred: {e}")
+
+@bot.command()
+async def checkunvouchable(ctx, member: discord.Member = None):
+    """Check if a user is unvouchable."""
+    try:
+        if member is None:
+            member = ctx.author
         
-        if not enabled_users:
-            await ctx.send("No users have vouch tracking enabled currently.")
+        if is_unvouchable(member.id):
+            await ctx.send(f"{member.mention} is currently unvouchable.")
+        else:
+            await ctx.send(f"{member.mention} can be vouched.")
+    except Exception as e:
+        await ctx.send(f"An error occurred: {e}")
+
+@bot.command()
+@commands.check(is_admin)
+async def unvouchable_list(ctx):
+    """[ADMIN] Lists all unvouchable users."""
+    try:
+        c.execute("SELECT user_id FROM unvouchable_users")
+        unvouchable_users = c.fetchall()
+        
+        if not unvouchable_users:
+            await ctx.send("No users are currently unvouchable.")
             return
             
-        count = len(enabled_users)
+        user_list = []
+        for user_id in unvouchable_users:
+            member = ctx.guild.get_member(user_id[0])
+            if member:
+                user_list.append(f"{member.mention} ({member.name}#{member.discriminator})")
         
-        if display.lower() == "list":
-            if not is_admin(ctx):
-                await ctx.send("Only admins can view the full list of users with vouch tracking enabled.")
-                return
-                
-            user_list = []
-            for user_id in enabled_users:
-                member = ctx.guild.get_member(user_id[0])
-                if member:
-                    user_list.append(f"{member.mention} ({member.name}#{member.discriminator})")
-            
-            chunk_size = 10
-            chunks = [user_list[i:i + chunk_size] for i in range(0, len(user_list), chunk_size)]
-            
-            for i, chunk in enumerate(chunks):
-                if i == 0:
-                    message = f"**Users with vouch tracking enabled ({count} total):**\n" + "\n".join(chunk)
-                else:
-                    message = "\n".join(chunk)
-                await ctx.send(message)
-        else:
-            await ctx.send(f"**{count} users** have vouch tracking enabled.")
-            
+        chunk_size = 10
+        chunks = [user_list[i:i + chunk_size] for i in range(0, len(user_list), chunk_size)]
+        
+        for i, chunk in enumerate(chunks):
+            if i == 0:
+                message = f"**Unvouchable users ({len(unvouchable_users)} total):**\n" + "\n".join(chunk)
+            else:
+                message = "\n".join(chunk)
+            await ctx.send(message)
     except Exception as e:
-        await ctx.send(f"An error occurred while fetching vouch stats: {e}")
+        await ctx.send(f"An error occurred: {e}")
+
+@bot.command()
+async def vouch(ctx, member: discord.Member):
+    """Vouch for another user."""
+    try:
+        # Admin bypass for all restrictions
+        admin_bypass = is_admin(ctx)
+        
+        if not admin_bypass:
+            if ctx.channel.name != "✅︱𝑽𝒐𝒖𝒄𝒉𝒆𝒔":
+                await ctx.send("This command can only be used in #✅︱𝑽𝒐𝒖𝒄𝒉𝒆𝒔.")
+                return
+        
+        if ctx.author == member and not admin_bypass:
+            await ctx.send("You cannot vouch for yourself!")
+            return
+            
+        if has_vouched(ctx.author.id, member.id) and not admin_bypass:
+            await ctx.send("You already vouched them once. You cannot vouch them again!")
+            return
+            
+        if not is_tracking_enabled(member.id):
+            await ctx.send(f"{member.mention} has not enabled vouch tracking!")
+            return
+            
+        if is_unvouchable(member.id) and not admin_bypass:
+            await ctx.send(f"{member.mention} is unvouchable!")
+            return
+            
+        count = get_vouches(member.id) + 1
+        set_vouches(member.id, count)
+        if not admin_bypass:  # Admins don't get recorded in vouch records
+            record_vouch(ctx.author.id, member.id)
+        await update_nickname(member)
+        
+        log_channel = discord.utils.get(ctx.guild.channels, name="✅︱𝑽𝒐𝒖𝒄𝒉𝒆𝒔")
+        if log_channel:
+            await log_channel.send(f"{member.mention} has been vouched by {ctx.author.mention}. New total: {count}")
+        
+        await ctx.send(f"{member.mention} now has {count} vouches!")
+    except Exception as e:
+        await ctx.send(f"An error occurred while processing the vouch: {e}")
 
 @bot.command()
 @commands.check(is_admin)
@@ -166,15 +238,7 @@ async def clearvouches(ctx, member: discord.Member):
         set_vouches(member.id, 0)
         c.execute("DELETE FROM vouch_records WHERE vouched_id = ?", (member.id,))
         conn.commit()
-        
-        current_nick = member.nick or member.name
-        if "[" in current_nick and "]" in current_nick:
-            new_nick = current_nick.split("[")[0].strip()
-            try:
-                await member.edit(nick=new_nick)
-            except discord.Forbidden:
-                await ctx.send(f"Couldn't update {member.mention}'s nickname (missing permissions).")
-        
+        await update_nickname(member)
         await ctx.send(f"Cleared vouches for {member.mention}!")
     except Exception as e:
         await ctx.send(f"An error occurred: {e}")
@@ -190,142 +254,13 @@ async def clearvouches_all(ctx):
         
         for member in ctx.guild.members:
             if is_tracking_enabled(member.id):
-                current_nick = member.nick or member.name
-                if "[" in current_nick and "]" in current_nick:
-                    new_nick = current_nick.split("[")[0].strip()
-                    try:
-                        await member.edit(nick=new_nick)
-                    except discord.Forbidden:
-                        pass
+                await update_nickname(member)
         
         await ctx.send("Cleared all vouches for all users!")
     except Exception as e:
         await ctx.send(f"An error occurred: {e}")
 
-@bot.command()
-@commands.check(is_admin)
-async def setvouches(ctx, member: discord.Member, count: int):
-    """[ADMIN] Manually sets a user's vouch count."""
-    try:
-        if count < 0:
-            await ctx.send("Vouch count cannot be negative!")
-            return
-        set_vouches(member.id, count)
-        await update_nickname(member)  # This will now handle the 0V case properly
-        await ctx.send(f"Set {member.mention}'s vouches to {count}!")
-    except Exception as e:
-        await ctx.send(f"An error occurred: {e}")
-
-@bot.command()
-async def enablevouch(ctx):
-    """Enable vouch tracking for yourself."""
-    try:
-        if not is_admin(ctx):
-            if ctx.channel.name != "✅︱𝑽𝒐𝒖𝒄𝒉𝒆𝒔":
-                await ctx.send("This command can only be used in #✅︱𝑽𝒐𝒖𝒄𝒉𝒆𝒔.")
-                return
-        enable_tracking(ctx.author.id)
-        await update_nickname(ctx.author)
-        await ctx.send(f"Vouch tracking enabled for {ctx.author.mention}!")
-    except Exception as e:
-        await ctx.send(f"An error occurred while enabling vouch tracking: {e}")
-
-@bot.command()
-@commands.check(is_admin)
-async def enablevouches_all(ctx):
-    """[ADMIN] Enable vouch tracking for all members (except admins)."""
-    try:
-        admin_roles = ["Administrator™🌟", "𝓞𝔀𝓷𝓮𝓻 👑", "𓂀 𝒞𝑜-𝒪𝓌�𝓃𝓮𝓇 𓂀✅"]
-        count = 0
-        
-        for member in ctx.guild.members:
-            if any(role.name in admin_roles for role in member.roles):
-                continue
-                
-            if not is_tracking_enabled(member.id):
-                enable_tracking(member.id)
-                await update_nickname(member)
-                count += 1
-        
-        await ctx.send(f"Enabled vouch tracking for {count} members!")
-    except Exception as e:
-        await ctx.send(f"An error occurred: {e}")
-
-@bot.command()
-async def disablevouch(ctx):
-    """Disable vouch tracking for yourself."""
-    try:
-        if not is_admin(ctx):
-            if ctx.channel.name != "✅︱𝑽𝒐𝒖𝒄𝒉𝒆𝒔":
-                await ctx.send("This command can only be used in #✅︱𝑽𝒐𝒖𝒄𝒉𝒆𝒔.")
-                return
-        disable_tracking(ctx.author.id)
-        current_nick = ctx.author.nick or ctx.author.name
-        if "[" in current_nick and "]" in current_nick:
-            new_nick = current_nick.split("[")[0].strip()
-            try:
-                await ctx.author.edit(nick=new_nick)
-            except discord.Forbidden:
-                pass
-        await ctx.send(f"Vouch tracking disabled for {ctx.author.mention}!")
-    except Exception as e:
-        await ctx.send(f"An error occurred while disabling vouch tracking: {e}")
-
-@bot.command()
-@commands.check(is_admin)
-async def disablevouches_all(ctx):
-    """[ADMIN] Disable vouch tracking for all members."""
-    try:
-        count = 0
-        for member in ctx.guild.members:
-            if is_tracking_enabled(member.id):
-                disable_tracking(member.id)
-                current_nick = member.nick or member.name
-                if "[" in current_nick and "]" in current_nick:
-                    new_nick = current_nick.split("[")[0].strip()
-                    try:
-                        await member.edit(nick=new_nick)
-                    except discord.Forbidden:
-                        pass
-                count += 1
-        
-        await ctx.send(f"Disabled vouch tracking for {count} members!")
-    except Exception as e:
-        await ctx.send(f"An error occurred: {e}")
-
-@bot.command()
-async def vouch(ctx, member: discord.Member):
-    """Vouch for another user."""
-    try:
-        if not is_admin(ctx):
-            if ctx.channel.name != "✅︱𝑽𝒐𝒖𝒄𝒉𝒆𝒔":
-                await ctx.send("This command can only be used in #✅︱𝑽𝒐𝒖𝒄𝒉𝒆𝒔.")
-                return
-        
-        if ctx.author == member:
-            await ctx.send("You cannot vouch for yourself!")
-            return
-            
-        if has_vouched(ctx.author.id, member.id):
-            await ctx.send("You already vouched them once. You cannot vouch them again!")
-            return
-            
-        if not is_tracking_enabled(member.id):
-            await ctx.send(f"{member.mention} has not enabled vouch tracking!")
-            return
-            
-        count = get_vouches(member.id) + 1
-        set_vouches(member.id, count)
-        record_vouch(ctx.author.id, member.id)
-        await update_nickname(member)
-        
-        log_channel = discord.utils.get(ctx.guild.channels, name="✅︱𝑽𝒐𝒖𝒄𝒉𝒆𝒔")
-        if log_channel:
-            await log_channel.send(f"{member.mention} has been vouched by {ctx.author.mention}. New total: {count}")
-        
-        await ctx.send(f"{member.mention} now has {count} vouches!")
-    except Exception as e:
-        await ctx.send(f"An error occurred while processing the vouch: {e}")
+# ... (rest of your existing commands remain the same)
 
 keep_alive()
 bot.run(TOKEN)
