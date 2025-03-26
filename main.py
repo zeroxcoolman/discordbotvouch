@@ -396,7 +396,7 @@ async def verify(ctx, member: discord.Member = None):
         verification = "✅ FULLY VERIFIED (All vouches are from community members)"
     elif legit_count < vouch_count:
         admin_vouches = vouch_count - legit_count
-        verification = f"⚠️ PARTIALLY VERIFIED ({admin_vouches} vouches were admin-set)"
+        verification = f"⚠️ PARTIALLY ADMIN VERIFIED ({admin_vouches} vouches were admin-set)"
     else:
         verification = "❌ DATABASE INCONSISTENCY (More records than total vouches)"
     
