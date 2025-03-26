@@ -410,6 +410,11 @@ async def verify(ctx, member: discord.Member = None):
     )
     
     await ctx.send(response)
+@bot.command()
+async def debug_roles(ctx):
+    """Check your roles to debug the issue"""
+    roles = [role.name for role in ctx.author.roles]
+    await ctx.send(f"Your roles: {', '.join(roles)}")
 
 keep_alive()
 bot.run(TOKEN)
