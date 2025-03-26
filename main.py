@@ -110,13 +110,12 @@ def is_admin(ctx):
     return any(role.name in admin_roles for role in ctx.author.roles)
 
 @bot.command()
-@commands.check(is_admin)
 async def vouchstats(ctx, display: str = "count"):
     """
-    [ADMIN] Shows vouch tracking statistics.
+    Shows vouch tracking statistics.
     Usage: !vouchstats [count/list]
-    - count: Shows just the number of users (default)
-    - list: Shows the full list of users with tracking enabled
+    - count: Shows just the number of users (default, available to everyone)
+    - list: Shows the full list of users with tracking enabled (admin only)
     """
     try:
         c.execute("SELECT user_id FROM vouches WHERE tracking_enabled = 1")
@@ -129,6 +128,11 @@ async def vouchstats(ctx, display: str = "count"):
         count = len(enabled_users)
         
         if display.lower() == "list":
+            # Check if user is admin for the list version
+            if not is_admin(ctx):
+                await ctx.send("Only admins can view the full list of users with vouch tracking enabled.")
+                return
+                
             user_list = []
             for user_id in enabled_users:
                 member = ctx.guild.get_member(user_id[0])
