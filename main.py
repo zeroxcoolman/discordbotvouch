@@ -111,11 +111,13 @@ async def update_nickname(member):
             return
             
         vouches = get_vouches(member.id)
-        current_nick = member.nick or member.name
+        current_nick = member.display_name  # Use their current display name (nickname if set, otherwise username)
         
-        # Remove existing tags
+        # Extract base name (remove existing tags if present)
         if "[" in current_nick and "]" in current_nick:
-            current_nick = current_nick.split("[")[0].strip()
+            base_name = current_nick.split("[")[0].strip()
+        else:
+            base_name = current_nick
         
         # Build new tags
         tags = []
@@ -124,12 +126,18 @@ async def update_nickname(member):
         if is_unvouchable(member.id):
             tags.append("unvouchable")
         
-        new_nick = f"{current_nick} [{', '.join(tags)}]" if tags else current_nick
+        # Construct new nickname (only modify if tags exist)
+        if tags:
+            new_nick = f"{base_name} [{', '.join(tags)}]"
+        else:
+            new_nick = base_name  # No tags? Revert to pure name
         
-        try:
-            await member.edit(nick=new_nick[:32])  # Enforce Discord's 32-char limit
-        except (discord.Forbidden, discord.HTTPException):
-            pass  # Silently fail on permission issues
+        # Apply changes (only if different)
+        if new_nick != current_nick and new_nick != member.name:  # Don't overwrite if identical to username
+            try:
+                await member.edit(nick=new_nick[:32])  # Enforce Discord's 32-char limit
+            except (discord.Forbidden, discord.HTTPException):
+                pass  # Silently fail on permission issues
     except Exception as e:
         print(f"Nick update error: {e}")
 
