@@ -86,7 +86,7 @@ def db_fetchall(query, params=()):
 
 # Core functions
 def is_admin(ctx):
-    admin_roles = ["Administrator™🌟", "𝓞𝔀𝓷𝓮𝓻 👑", "𓂀 𝒞𝑜-𝒪𝓌𝓃𝓮𝓇 𓂀✅"]
+    admin_roles = ["Administrator™🌟", "𝓞𝔀𝓷𝓮𝓻 👑", "𓂀 𝒞𝑜-𝒪𝓌𝓃𝓮𝓻 𓂀✅"]
     return any(role.name in admin_roles for role in ctx.author.roles)
 
 def get_vouches(user_id):
@@ -351,6 +351,65 @@ async def vouchstats(ctx, display: str = "count"):
         await ctx.send(msg[:2000])
     else:
         await ctx.send(f"📊 {count} users have vouch tracking enabled")
+
+@bot.command()
+async def verify(ctx, member: discord.Member = None):
+    """Verify a user's vouch count is legitimate"""
+    target = member or ctx.author
+    
+    # Check unvouchable status first
+    if is_unvouchable(target.id):
+        vouch_count = get_vouches(target.id)
+        return await ctx.send(f"🔒 {target.mention} is UNVOUCHABLE (Database shows {vouch_count} vouches)")
+    
+    # Get their actual vouch count
+    vouch_count = get_vouches(target.id)
+    
+    # Check if they have no vouches
+    if vouch_count == 0:
+        return await ctx.send(f"❌ {target.mention} has no vouches in the database!")
+    
+    # Parse their current nickname for displayed vouches
+    displayed_vouches = 0
+    if "[" in target.display_name and "]" in target.display_name:
+        tag_part = target.display_name.split("[")[-1].split("]")[0]
+        for part in tag_part.split(","):
+            part = part.strip()
+            if part.endswith("V"):
+                try:
+                    displayed_vouches = int(part[:-1])
+                    break
+                except ValueError:
+                    continue
+    
+    # Get all legitimate vouchers (non-admin vouches)
+    legit_vouches = db_fetchall("""
+    SELECT COUNT(*) as count 
+    FROM vouch_records 
+    WHERE vouched_id = ?
+    """, (target.id,))
+    
+    legit_count = legit_vouches[0]['count'] if legit_vouches else 0
+    
+    # Compare counts
+    if legit_count == vouch_count:
+        verification = "✅ FULLY VERIFIED (All vouches are from community members)"
+    elif legit_count < vouch_count:
+        admin_vouches = vouch_count - legit_count
+        verification = f"⚠️ PARTIALLY VERIFIED ({admin_vouches} vouches were admin-set)"
+    else:
+        verification = "❌ DATABASE INCONSISTENCY (More records than total vouches)"
+    
+    # Build response
+    response = (
+        f"**Vouch Verification for {target.mention}**\n"
+        f"• Displayed: {displayed_vouches}V\n"
+        f"• Database: {vouch_count} vouches\n"
+        f"• Community vouches: {legit_count}\n"
+        f"• Status: {verification}"
+    )
+    
+    await ctx.send(response)
 
 keep_alive()
 bot.run(TOKEN)
