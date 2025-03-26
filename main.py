@@ -416,17 +416,10 @@ async def debug_roles(ctx):
     roles = [role.name for role in ctx.author.roles]
     await ctx.send(f"Your roles: {', '.join(roles)}")
 @bot.command()
-async def check_admin(ctx):
-    """Check if the bot recognizes you as an admin"""
-    admin_roles = ["Administrator™🌟", "𝓞𝔀𝓷𝓮𝓻 👑", "𓂀 𝒞𝑜-𝒪𝓌𝓃𝑒𝓇 𓂀✅"]
-    user_roles = [role.name for role in ctx.author.roles]
-    
-    matched_roles = [role for role in user_roles if role in admin_roles]
-    
-    if matched_roles:
-        await ctx.send(f"✅ You are an admin! Matched role: {', '.join(matched_roles)}")
+async def test_admin(ctx):
+    if is_admin(ctx):
+        await ctx.send("✅ You are an admin and checks should work.")
     else:
-        await ctx.send("❌ You are NOT recognized as an admin.")
-
+        await ctx.send("❌ The bot does NOT recognize you as an admin.")
 keep_alive()
 bot.run(TOKEN)
