@@ -111,13 +111,14 @@ async def update_nickname(member):
             return
             
         vouches = get_vouches(member.id)
-        current_nick = member.display_name  # Use their current display name (nickname if set, otherwise username)
+        current_nick = member.display_name  # Their current display name (nickname or username)
         
-        # Extract base name (remove existing tags if present)
+        # Extract the base name (keep custom parts, only remove old tags)
         if "[" in current_nick and "]" in current_nick:
-            base_name = current_nick.split("[")[0].strip()
+            # Split at the last "[" to preserve custom text before tags
+            base_name = current_nick.rsplit("[", 1)[0].strip()
         else:
-            base_name = current_nick
+            base_name = current_nick  # No tags? Keep full name
         
         # Build new tags
         tags = []
@@ -133,7 +134,7 @@ async def update_nickname(member):
             new_nick = base_name  # No tags? Revert to pure name
         
         # Apply changes (only if different)
-        if new_nick != current_nick and new_nick != member.name:  # Don't overwrite if identical to username
+        if new_nick != current_nick:
             try:
                 await member.edit(nick=new_nick[:32])  # Enforce Discord's 32-char limit
             except (discord.Forbidden, discord.HTTPException):
