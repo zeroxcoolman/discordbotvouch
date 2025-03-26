@@ -157,11 +157,13 @@ async def on_command_error(ctx, error):
 async def unvouchable(ctx, member: discord.Member, action: str = "on"):
     """[ADMIN] Toggle unvouchable status (on/off)"""
     action = action.lower()
-    if action in ("on", "enable", "yes"):
-        db_execute("INSERT OR IGNORE INTO unvouchable_users VALUES (?)", (member.id,))
+    if action in ("on", "enable", "yes", "true", "1"):
+        if not db_execute("INSERT OR IGNORE INTO unvouchable_users VALUES (?)", (member.id,)):
+            return await ctx.send("❌ Failed to update database!")
         await ctx.send(f"🔒 {member.mention} is now unvouchable!")
     else:
-        db_execute("DELETE FROM unvouchable_users WHERE user_id = ?", (member.id,))
+        if not db_execute("DELETE FROM unvouchable_users WHERE user_id = ?", (member.id,)):
+            return await ctx.send("❌ Failed to update database!")
         await ctx.send(f"🔓 {member.mention} can now be vouched!")
     await update_nickname(member)
 
@@ -207,13 +209,15 @@ async def vouch(ctx, member: discord.Member):
 
         # Process vouch
         new_count = get_vouches(member.id) + 1
-        db_execute("""
+        if not db_execute("""
         INSERT INTO vouches VALUES (?, ?, 1) 
         ON CONFLICT(user_id) DO UPDATE SET vouch_count = ?
-        """, (member.id, new_count, new_count))
+        """, (member.id, new_count, new_count)):
+            return await ctx.send("❌ Database error!")
         
         if not admin:
-            db_execute("INSERT INTO vouch_records VALUES (?, ?)", (ctx.author.id, member.id))
+            if not db_execute("INSERT INTO vouch_records VALUES (?, ?)", (ctx.author.id, member.id)):
+                return await ctx.send("❌ Database error!")
         
         await update_nickname(member)
         await ctx.send(f"✅ {member.mention} now has {new_count} vouches!")
@@ -226,8 +230,10 @@ async def vouch(ctx, member: discord.Member):
 @commands.check(is_admin)
 async def clearvouches(ctx, member: discord.Member):
     """[ADMIN] Reset a user's vouches"""
-    db_execute("UPDATE vouches SET vouch_count = 0 WHERE user_id = ?", (member.id,))
-    db_execute("DELETE FROM vouch_records WHERE vouched_id = ?", (member.id,))
+    if not db_execute("UPDATE vouches SET vouch_count = 0 WHERE user_id = ?", (member.id,)):
+        return await ctx.send("❌ Database error!")
+    if not db_execute("DELETE FROM vouch_records WHERE vouched_id = ?", (member.id,)):
+        return await ctx.send("❌ Database error!")
     await update_nickname(member)
     await ctx.send(f"♻️ Cleared vouches for {member.mention}!")
 
@@ -235,8 +241,10 @@ async def clearvouches(ctx, member: discord.Member):
 @commands.check(is_admin)
 async def clearvouches_all(ctx):
     """[ADMIN] Reset ALL vouches"""
-    db_execute("UPDATE vouches SET vouch_count = 0")
-    db_execute("DELETE FROM vouch_records")
+    if not db_execute("UPDATE vouches SET vouch_count = 0"):
+        return await ctx.send("❌ Database error!")
+    if not db_execute("DELETE FROM vouch_records"):
+        return await ctx.send("❌ Database error!")
     
     for member in ctx.guild.members:
         if is_tracking_enabled(member.id):
@@ -251,10 +259,11 @@ async def setvouches(ctx, member: discord.Member, count: int):
     if count < 0:
         return await ctx.send("❌ Vouch count cannot be negative!")
     
-    db_execute("""
+    if not db_execute("""
     INSERT INTO vouches VALUES (?, ?, 1) 
     ON CONFLICT(user_id) DO UPDATE SET vouch_count = ?
-    """, (member.id, count, count))
+    """, (member.id, count, count)):
+        return await ctx.send("❌ Database error!")
     
     await update_nickname(member)
     await ctx.send(f"✅ Set {member.mention}'s vouches to {count}!")
@@ -265,10 +274,11 @@ async def enablevouch(ctx):
     if not is_admin(ctx) and ctx.channel.name != "✅︱𝑽𝒐𝒖𝒄𝒉𝒆𝒔":
         return await ctx.send("❌ Use the vouch channel!")
     
-    db_execute("""
+    if not db_execute("""
     INSERT INTO vouches (user_id, tracking_enabled) VALUES (?, 1) 
     ON CONFLICT(user_id) DO UPDATE SET tracking_enabled = 1
-    """, (ctx.author.id,))
+    """, (ctx.author.id,)):
+        return await ctx.send("❌ Database error!")
     
     await update_nickname(ctx.author)
     await ctx.send(f"✅ Vouch tracking enabled for {ctx.author.mention}!")
@@ -279,7 +289,8 @@ async def disablevouch(ctx):
     if not is_admin(ctx) and ctx.channel.name != "✅︱𝑽𝒐𝒖𝒄𝒉𝒆𝒔":
         return await ctx.send("❌ Use the vouch channel!")
     
-    db_execute("UPDATE vouches SET tracking_enabled = 0 WHERE user_id = ?", (ctx.author.id,))
+    if not db_execute("UPDATE vouches SET tracking_enabled = 0 WHERE user_id = ?", (ctx.author.id,)):
+        return await ctx.send("❌ Database error!")
     await update_nickname(ctx.author)
     await ctx.send(f"✅ Vouch tracking disabled for {ctx.author.mention}!")
 
@@ -290,12 +301,12 @@ async def enablevouches_all(ctx):
     count = 0
     for member in ctx.guild.members:
         if not is_admin(ctx) and not is_tracking_enabled(member.id):
-            db_execute("""
+            if db_execute("""
             INSERT INTO vouches (user_id, tracking_enabled) VALUES (?, 1)
             ON CONFLICT(user_id) DO UPDATE SET tracking_enabled = 1
-            """, (member.id,))
-            count += 1
-            await update_nickname(member)
+            """, (member.id,)):
+                count += 1
+                await update_nickname(member)
     
     await ctx.send(f"✅ Enabled tracking for {count} users!")
 
@@ -306,9 +317,9 @@ async def disablevouches_all(ctx):
     count = 0
     for member in ctx.guild.members:
         if is_tracking_enabled(member.id):
-            db_execute("UPDATE vouches SET tracking_enabled = 0 WHERE user_id = ?", (member.id,))
-            count += 1
-            await update_nickname(member)
+            if db_execute("UPDATE vouches SET tracking_enabled = 0 WHERE user_id = ?", (member.id,)):
+                count += 1
+                await update_nickname(member)
     
     await ctx.send(f"✅ Disabled tracking for {count} users!")
 
