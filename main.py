@@ -146,44 +146,32 @@ async def update_nickname(member):
 
         vouches = get_vouches(member.id)
         current_nick = member.display_name
-
-        # Completely clean the nickname
         base_name = clean_nickname(current_nick)
 
-        # Only add tags if they don't already exist with correct values
+        # Build new tags
         new_tags = []
-        current_tags = []
-        
-        # Parse existing tags if any
-        if '[' in current_nick and ']' in current_nick:
-            tag_part = current_nick.split('[')[-1].split(']')[0]
-            current_tags = [t.strip() for t in tag_part.split(',')]
-
-        # Determine what tags should exist
-        expected_tags = []
         if vouches > 0:
-            expected_tags.append(f"{vouches}V")
+            new_tags.append(f"{vouches}V")
         if is_unvouchable(member.id):
-            expected_tags.append("unvouchable")
+            new_tags.append("unvouchable")
 
-        # Only update if tags don't match
-        if set(current_tags) != set(expected_tags):
-            if expected_tags:
-                new_nick = f"{base_name} [{', '.join(expected_tags)}]"
-                new_nick = new_nick.replace("[", "［").replace("]", "］")
-            else:
-                new_nick = base_name
+        # Construct new nickname
+        new_nick = base_name
+        if new_tags:
+            new_nick = f"{base_name} [{', '.join(new_tags)}]"
+            new_nick = new_nick.replace("[", "［").replace("]", "］")
 
-            # Ensure nickname length is within limits
-            new_nick = new_nick[:32]
+        # Ensure nickname length is valid
+        new_nick = new_nick[:32]
 
-            if new_nick != current_nick:
-                try:
-                    await member.edit(nick=new_nick)
-                except (discord.Forbidden, discord.HTTPException) as e:
-                    print(f"Nickname update failed for {member.display_name}: {e}")
+        # Only update if different
+        if new_nick != current_nick:
+            try:
+                await member.edit(nick=new_nick)
+            except (discord.Forbidden, discord.HTTPException):
+                print(f"Couldn't update nickname for {member.display_name}")
     except Exception as e:
-        print(f"Error updating nickname for {member.display_name}: {e}")
+        print(f"Error updating nickname: {e}")
 # ========================
 # YOUR ORIGINAL COMMANDS (EXACTLY AS YOU HAD THEM)
 # ========================
@@ -342,13 +330,22 @@ async def setvouches(ctx, member: discord.Member, count: int):
     if count < 0:
         return await ctx.send("❌ Vouch count cannot be negative!")
 
+    # First completely reset the nickname before setting new vouches
+    current_nick = member.display_name
+    base_name = clean_nickname(current_nick)
+    try:
+        await member.edit(nick=base_name)  # Remove all tags first
+    except discord.HTTPException:
+        pass  # Skip if we can't edit the nickname
+
+    # Update database with new count
     if not db_execute("""
     INSERT INTO vouches VALUES (?, ?, 1) 
     ON CONFLICT(user_id) DO UPDATE SET vouch_count = ?
     """, (member.id, count, count)):
         return await ctx.send("❌ Database error!")
 
-    # Force a complete nickname refresh
+    # Force a fresh nickname update
     await update_nickname(member)
     await ctx.send(f"✅ Set {member.mention}'s vouches to {count}!")
 
