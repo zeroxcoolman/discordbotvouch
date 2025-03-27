@@ -398,16 +398,30 @@ async def setvouches(ctx, member: discord.Member, count: int):
         except discord.HTTPException:
             pass  # Skip if we can't reset nickname
 
-        # 2. UPDATE DATABASE
+        # 2. UPDATE DATABASE (WITH ADMIN VOUCH RECORD)
+        current_count = get_vouches(member.id)
+        difference = count - current_count
+        
         if not db_execute("""
         INSERT INTO vouches VALUES (?, ?, 1) 
         ON CONFLICT(user_id) DO UPDATE SET vouch_count = ?
         """, (member.id, count, count)):
             return await ctx.send("❌ Database error!")
+            
+        # Add admin vouch record if increasing vouches
+        if difference > 0:
+            db_execute("""
+            INSERT OR IGNORE INTO vouch_records VALUES (?, ?)
+            """, (ctx.author.id, member.id))
 
         # 3. FORCE FRESH NICKNAME UPDATE
         await update_nickname(member)
         await ctx.send(f"✅ Set {member.mention}'s vouches to {count}!")
+
+    except Exception as e:
+        error_msg = f"⚠️ Partial success: Vouches set but nickname may need manual fix ({str(e)[:100]})"
+        await ctx.send(error_msg)
+        db_execute("UPDATE vouches SET vouch_count = ? WHERE user_id = ?", (count, member.id))
 
     except Exception as e:
         # ULTIMATE FALLBACK
@@ -524,15 +538,30 @@ async def verify(ctx, member: discord.Member = None):
                 except ValueError:
                     continue
     
-    # Get verification data
-    legit_vouches = db_fetchall("SELECT COUNT(*) as count FROM vouch_records WHERE vouched_id = ?", (target.id,))
+    # Get verification data - MODIFIED SECTION
+    legit_vouches = db_fetchall("""
+    SELECT COUNT(*) as count FROM vouch_records 
+    WHERE vouched_id = ? 
+    AND voucher_id != vouched_id  # Exclude self-vouches
+    """, (target.id,))
+    
+    admin_vouches = db_fetchall("""
+    SELECT COUNT(*) as count FROM vouch_records 
+    WHERE vouched_id = ? 
+    AND voucher_id = ?  # Only count admin-set vouches
+    """, (target.id, ctx.guild.owner_id))  # Or your admin user ID
+    
     legit_count = legit_vouches[0]['count'] if legit_vouches else 0
-    admin_vouches = vouch_count - legit_count
+    admin_count = admin_vouches[0]['count'] if admin_vouches else 0
+    
+    # Calculate unaccounted vouches (should match admin_vouches)
+    unaccounted = vouch_count - legit_count - admin_count
     
     # Determine admin vouch level
     admin_vouch_level = ""
-    if admin_vouches > 0:
-        ratio = admin_vouches / vouch_count
+    total_admin_vouches = admin_count + unaccounted
+    if total_admin_vouches > 0:
+        ratio = total_admin_vouches / vouch_count
         if ratio > 0.75:
             admin_vouch_level = "MOSTLY ADMIN VOUCHES"
         elif ratio > 0.45:
@@ -548,12 +577,11 @@ async def verify(ctx, member: discord.Member = None):
         verification = "🚨 FAKE TAGS DETECTED"
     elif not nickname_valid:
         verification = "⚠️ TAG DISCREPANCY"
-        # Notify admins about tag discrepancy
         await notify_admins(ctx.guild, target, "Tag discrepancy")
     elif legit_count == vouch_count:
         verification = "✅ FULLY VERIFIED"
-    elif admin_vouches > 0:
-        verification = f"⚠️ {admin_vouch_level} ({admin_vouches}/{vouch_count})"
+    elif total_admin_vouches > 0:
+        verification = f"⚠️ {admin_vouch_level} ({total_admin_vouches}/{vouch_count})"
     else:
         verification = "❌ DATABASE INCONSISTENCY"
     
@@ -563,11 +591,13 @@ async def verify(ctx, member: discord.Member = None):
         f"• Displayed: {displayed_vouches}V\n"
         f"• Database: {vouch_count} vouches\n"
         f"• Community vouches: {legit_count}\n"
-        f"• Admin vouches: {admin_vouches}\n"
+        f"• Admin vouches: {total_admin_vouches}\n"
         f"• Status: {verification}"
     )
     
     await ctx.send(response[:2000])
+
+
 async def notify_admins(guild, member, reason):
     """Notify admins about a vouch discrepancy"""
     admin_roles = ["Administrator™🌟", "𝓞𝔀𝓷𝓮𝓻 👑", "𓂀 𝒞𝑜-𝒪𝓌𝓃𝑒𝓻 𓂀✅"]
