@@ -257,7 +257,7 @@ async def unvouchable_list(ctx):
 
 @bot.command()
 async def vouch(ctx, member: discord.Member, *, reason: str = "No reason provided"):
-    """Vouch for a user (now with cooldown and reason)"""
+    """Vouch for a user (now with cooldown, reason, and DM notification)"""
     try:
         admin = is_admin(ctx)
         
@@ -314,6 +314,27 @@ async def vouch(ctx, member: discord.Member, *, reason: str = "No reason provide
         
         await update_nickname(member)
         await ctx.send(f"✅ {member.mention} now has {new_count} vouches! Reason: {reason[:50]}")
+
+        # ============================================
+        # NEW: Send DM notification to the vouched user
+        # ============================================
+        try:
+            embed = discord.Embed(
+                title="🎉 You've received a vouch!",
+                description=f"**{ctx.author.display_name}** vouched for you in {ctx.guild.name}",
+                color=discord.Color.green()
+            )
+            embed.add_field(name="Reason", value=reason[:1024], inline=False)
+            embed.add_field(name="Total Vouches", value=new_count)
+            embed.set_footer(text=f"Vouched at {datetime.datetime.now().strftime('%Y-%m-%d %H:%M')}")
+            
+            await member.send(embed=embed)
+        except discord.Forbidden:
+            # User has DMs disabled or blocked the bot - silently fail
+            pass
+        except Exception as e:
+            print(f"Failed to send vouch DM: {e}")
+        # ============================================
         
         # Schedule spam counter reset
         if not admin:
