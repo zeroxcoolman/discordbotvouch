@@ -353,6 +353,36 @@ async def fixnicks(ctx):
 
 @bot.command()
 @commands.check(is_admin)
+async def fix_vouch_records(ctx):
+    """[ADMIN] Reconcile all vouch counts with records"""
+    fixed = 0
+    users = db_fetchall("SELECT user_id, vouch_count FROM vouches")
+    for user in users:
+        records = db_fetchone("SELECT COUNT(*) FROM vouch_records WHERE vouched_id = ?", (user['user_id'],))[0]
+        diff = user['vouch_count'] - records
+        
+        if diff > 0:
+            # Add missing admin vouches
+            db_execute("INSERT INTO vouch_records (voucher_id, vouched_id) VALUES (?, ?)", 
+                      (ctx.author.id, user['user_id']))
+            fixed += diff
+        elif diff < 0:
+            # Remove excess vouches
+            db_execute("""
+            DELETE FROM vouch_records 
+            WHERE rowid IN (
+                SELECT rowid FROM vouch_records 
+                WHERE vouched_id = ? 
+                ORDER BY rowid DESC 
+                LIMIT ?
+            )
+            """, (user['user_id'], abs(diff)))
+            fixed += abs(diff)
+    
+    await ctx.send(f"✅ Fixed {fixed} vouch record mismatches!")
+
+@bot.command()
+@commands.check(is_admin)
 async def nuclear_fix(ctx, member: discord.Member):
     """[ADMIN] COMPLETELY reset problematic nicknames"""
     try:
