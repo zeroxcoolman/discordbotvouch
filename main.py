@@ -351,28 +351,37 @@ async def vouch(ctx, member: discord.Member, *, reason: str = "No reason provide
 @bot.command()
 @commands.check(is_admin)
 async def clearvouches(ctx, member: discord.Member):
-    """[ADMIN] Reset a user's vouches"""
-    if not db_execute("UPDATE vouches SET vouch_count = 0 WHERE user_id = ?", (member.id,)):
-        return await ctx.send("❌ Database error!")
-    if not db_execute("DELETE FROM vouch_records WHERE vouched_id = ?", (member.id,)):
-        return await ctx.send("❌ Database error!")
+    """[ADMIN] Reset a user's vouches and allow re-vouching"""
+    with get_db() as conn:
+        # Reset vouch count
+        conn.execute("UPDATE vouches SET vouch_count = 0 WHERE user_id = ?", (member.id,))
+        # Clear vouch history
+        conn.execute("DELETE FROM vouch_records WHERE vouched_id = ?", (member.id,))
+        # Clear cooldowns (NEW)
+        conn.execute("DELETE FROM vouch_cooldowns WHERE user_id = ?", (member.id,))
+    
     await update_nickname(member)
-    await ctx.send(f"♻️ Cleared vouches for {member.mention}!")
+    await ctx.send(f"♻️ Completely reset vouches for {member.mention}! Users can now vouch for them again.")
+
 
 @bot.command()
 @commands.check(is_admin)
 async def clearvouches_all(ctx):
-    """[ADMIN] Reset ALL vouches"""
-    if not db_execute("UPDATE vouches SET vouch_count = 0"):
-        return await ctx.send("❌ Database error!")
-    if not db_execute("DELETE FROM vouch_records"):
-        return await ctx.send("❌ Database error!")
+    """[ADMIN] Reset ALL vouches and cooldowns"""
+    with get_db() as conn:
+        # Reset all counts
+        conn.execute("UPDATE vouches SET vouch_count = 0")
+        # Clear all records
+        conn.execute("DELETE FROM vouch_records")
+        # Clear all cooldowns (NEW)
+        conn.execute("DELETE FROM vouch_cooldowns")
     
+    # Update nicknames
     for member in ctx.guild.members:
         if is_tracking_enabled(member.id):
             await update_nickname(member)
     
-    await ctx.send("♻️ Cleared ALL vouches!")
+    await ctx.send("♻️ Completely reset ALL vouches and cooldowns!")
 
 @bot.command()
 @commands.check(is_admin)
