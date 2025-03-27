@@ -622,79 +622,73 @@ async def vouchstats(ctx, display: str = "count"):
 
 @bot.command()
 async def verify(ctx, member: discord.Member = None):
-    """Verify a user's vouch count and sources automatically"""
+    """Lightning-fast verification with admin vouch detection"""
     target = member or ctx.author
     
-    # Get database values
-    vouch_count = get_vouches(target.id)
-    is_unvouch = is_unvouchable(target.id)
-    
-    # Automatic tag detection (works with [ ] and ［ ］)
+    # 1. Get ALL data in ONE database query (Super Fast)
+    with get_db() as conn:
+        data = conn.execute("""
+            SELECT 
+                v.vouch_count,
+                COUNT(vr.voucher_id) as total_vouches,
+                SUM(CASE WHEN uu.user_id IS NOT NULL THEN 1 ELSE 0 END) as admin_vouches,
+                v.tracking_enabled,
+                EXISTS(SELECT 1 FROM unvouchable_users WHERE user_id = v.user_id) as is_unvouchable
+            FROM vouches v
+            LEFT JOIN vouch_records vr ON vr.vouched_id = v.user_id
+            LEFT JOIN unvouchable_users uu ON vr.voucher_id = uu.user_id
+            WHERE v.user_id = ?
+            GROUP BY v.user_id
+            """, (target.id,)).fetchone()
+
+    # 2. Parse data with defaults
+    vouch_count = data[0] if data else 0
+    total_vouches = data[1] if data else 0
+    admin_vouches = data[2] if data else 0
+    tracking_enabled = data[3] if data else False
+    is_unvouchable = data[4] if data else False
+    community_vouches = total_vouches - admin_vouches
+    admin_adjustments = max(0, vouch_count - total_vouches)
+
+    # 3. Parse displayed vouches (supports [ ] and ［ ］)
     displayed_vouches = 0
     if target.display_name:
-        import re
         match = re.search(r'[\[［](\d+)V[\]］]', target.display_name)
         if match:
             displayed_vouches = int(match.group(1))
-    
-    # Get vouch sources
-    community_vouches = db_fetchone("""
-        SELECT COUNT(*) FROM vouch_records 
-        WHERE vouched_id = ? 
-        AND NOT EXISTS (
-            SELECT 1 FROM unvouchable_users WHERE user_id = voucher_id
-        )
-    """, (target.id,))[0] or 0
 
-    admin_vouches = db_fetchone("""
-        SELECT COUNT(*) FROM vouch_records 
-        WHERE vouched_id = ? 
-        AND EXISTS (
-            SELECT 1 FROM unvouchable_users WHERE user_id = voucher_id
-        )
-    """, (target.id,))[0] or 0
+    # 4. Build response
+    response = [
+        f"**Verification for {target.mention}**",
+        f"• Displayed: {displayed_vouches}V",
+        f"• Database: {vouch_count} vouches",
+        f"┣ Community: {community_vouches}",
+        f"┣ Admin: {admin_vouches}",
+        f"┗ Adjustments: {admin_adjustments}",
+    ]
 
-    admin_adjustments = max(0, vouch_count - (community_vouches + admin_vouches))
-    
-    # Build response
-    response = f"**Verification for {target.mention}**\n"
-    response += f"• Displayed: {displayed_vouches}V\n"
-    response += f"• Database: {vouch_count} vouches\n"
-    response += f"┣ Community: {community_vouches}\n"
-    response += f"┣ Admin: {admin_vouches}\n"
-    response += f"┗ Adjustments: {admin_adjustments}\n"
-    
-    # Verification logic
-    if is_unvouch:
-        response += "🔒 **UNVOUCHABLE USER**"
+    # 5. Determine status
+    if is_unvouchable:
+        status = "🔒 UNVOUCHABLE"
+    elif not tracking_enabled:
+        status = "⚙️ TRACKING OFF"
     elif displayed_vouches > vouch_count:
-        response += "🚨 **FAKE TAGS DETECTED**"
-        await notify_admins(
-            ctx.guild,
-            target,
-            f"Fake tags! Shows {displayed_vouches}V but has {vouch_count} vouches\n"
-            f"(Community: {community_vouches} | Admin: {admin_vouches} | Adjustments: {admin_adjustments})"
-        )
-    elif displayed_vouches < vouch_count:
-        response += "⚠️ **TAG DISCREPANCY**"
-        await notify_admins(
-            ctx.guild,
-            target,
-            f"Tag mismatch: Shows {displayed_vouches}V but has {vouch_count}\n"
-            f"(Community: {community_vouches} | Admin: {admin_vouches} | Adjustments: {admin_adjustments})"
-        )
-    elif admin_adjustments > vouch_count * 0.5:  # More than 50% admin-set
-        response += "⚠️ **ADMIN-SET VOUCHES**"
-        await notify_admins(
-            ctx.guild,
-            target,
-            f"Suspicious admin activity: {admin_adjustments}/{vouch_count} vouches\n"
-            f"(Community: {community_vouches} | Admin: {admin_vouches})"
-        )
+        status = "🚨 FAKE TAGS"
+        bot.loop.create_task(notify_admins(ctx.guild, target, 
+            f"Fake Tags: Shows {displayed_vouches}V | Real: {vouch_count}\n"
+            f"Sources: Community={community_vouches} Admin={admin_vouches} Adjusted={admin_adjustments}"
+        ))
+    elif admin_adjustments > vouch_count * 0.3:  # 30% threshold
+        status = f"⚠️ {admin_adjustments} ADMIN-SET"
+        bot.loop.create_task(notify_admins(ctx.guild, target,
+            f"Suspicious Admin Vouches: {admin_adjustments}/{vouch_count}\n"
+            f"Breakdown: Community={community_vouches} Admin={admin_vouches}"
+        ))
     else:
-        response += "✅ **VERIFIED**"
-    
-    await ctx.send(response)
+        status = "✅ VERIFIED"
+
+    response.append(f"• Status: {status}")
+    await ctx.send("\n".join(response))
 
 
 async def notify_admins(guild, member, reason):
