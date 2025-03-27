@@ -1,4 +1,6 @@
 import re
+import datetime
+import traceback
 import discord
 from discord.ext import commands
 import sqlite3
@@ -57,6 +59,7 @@ def init_db():
         CREATE TABLE IF NOT EXISTS vouch_records (
             voucher_id INTEGER,
             vouched_id INTEGER,
+            timestamp INTEGER DEFAULT 0,
             PRIMARY KEY (voucher_id, vouched_id)
         )
         """)
@@ -65,7 +68,6 @@ def init_db():
             user_id INTEGER PRIMARY KEY
         )
         """)
-        # New tables for enhancements:
         conn.execute("""
         CREATE TABLE IF NOT EXISTS vouch_cooldowns (
             user_id INTEGER PRIMARY KEY,
@@ -80,6 +82,11 @@ def init_db():
             timestamp INTEGER,
             PRIMARY KEY (voucher_id, vouched_id)
         )
+        """)
+        # Add index for faster timestamp queries
+        conn.execute("""
+        CREATE INDEX IF NOT EXISTS idx_vouch_timestamp 
+        ON vouch_records(timestamp)
         """)
 
 init_db()
@@ -432,9 +439,10 @@ async def resetnick(ctx, member: discord.Member):
 @bot.command()
 @commands.check(is_admin)
 async def setvouches(ctx, member: discord.Member, count: int):
-    """[ADMIN] Set vouch count with duplicate protection"""
+    """[ADMIN] Set vouch count with timestamp tracking"""
     current = get_vouches(member.id)
     difference = count - current
+    current_time = int(time.time())
     
     try:
         with get_db() as conn:
@@ -446,19 +454,20 @@ async def setvouches(ctx, member: discord.Member, count: int):
             
             # Handle adjustments
             if difference > 0:
-                # Insert only if not exists
+                # Insert with timestamps
                 conn.executemany("""
                     INSERT OR IGNORE INTO vouch_records 
-                    VALUES (?, ?)
-                    """, [(ctx.author.id, member.id)] * difference)
+                    (voucher_id, vouched_id, timestamp)
+                    VALUES (?, ?, ?)
+                    """, [(ctx.author.id, member.id, current_time)] * difference)
             elif difference < 0:
-                # Delete oldest non-admin vouches
+                # Delete oldest vouches first
                 conn.execute("""
                     DELETE FROM vouch_records 
                     WHERE rowid IN (
                         SELECT rowid FROM vouch_records 
                         WHERE vouched_id = ?
-                        ORDER BY rowid ASC 
+                        ORDER BY timestamp ASC, rowid ASC
                         LIMIT ?
                     )
                     """, (member.id, abs(difference)))
@@ -571,6 +580,51 @@ async def reconcile_vouches(ctx, member: discord.Member = None):
             await ctx.send(f"✅ Fixed {fixed} vouch record mismatches")
     except sqlite3.Error as e:
         await ctx.send(f"❌ Database error during reconciliation: {str(e)}")
+
+@bot.command()
+@commands.check(is_admin)
+async def vouch_history(ctx, member: discord.Member, limit: int = 5):
+    """[ADMIN] Show recent vouch activity for a user"""
+    records = db_fetchall("""
+        SELECT vr.voucher_id, vr.timestamp, uu.user_id IS NOT NULL as is_admin, vr2.reason
+        FROM vouch_records vr
+        LEFT JOIN unvouchable_users uu ON vr.voucher_id = uu.user_id
+        LEFT JOIN vouch_reasons vr2 ON vr.voucher_id = vr2.voucher_id AND vr.vouched_id = vr2.vouched_id
+        WHERE vr.vouched_id = ?
+        ORDER BY vr.timestamp DESC
+        LIMIT ?
+    """, (member.id, limit))
+
+    if not records:
+        return await ctx.send(f"No vouch history found for {member.mention}")
+
+    lines = []
+    for record in records:
+        admin = ctx.guild.get_member(record['voucher_id'])
+        admin_name = admin.mention if admin else f"Unknown User ({record['voucher_id']})"
+        timestamp = datetime.datetime.fromtimestamp(record['timestamp']).strftime('%Y-%m-%d %H:%M')
+        lines.append(
+            f"{timestamp} - {admin_name} "
+            f"{'(ADMIN) ' if record['is_admin'] else ''}"
+            f"- Reason: {record['reason'] or 'None'}"
+        )
+
+    await ctx.send(
+        f"**Last {limit} vouches for {member.mention}:**\n"
+        + "\n".join(lines)
+    )
+
+@bot.command()
+@commands.check(is_admin)
+async def fix_vouch_timestamps(ctx):
+    """[ADMIN] Repair missing timestamps in old records"""
+    count = db_execute("""
+        UPDATE vouch_records 
+        SET timestamp = ?
+        WHERE timestamp = 0 OR timestamp IS NULL
+    """, (int(time.time()),))
+    
+    await ctx.send(f"✅ Updated timestamps for {count} records")
 
 
 @bot.command()
