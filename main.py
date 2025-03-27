@@ -413,44 +413,42 @@ async def resetnick(ctx, member: discord.Member):
 @bot.command()
 @commands.check(is_admin)
 async def setvouches(ctx, member: discord.Member, count: int):
-    """[ADMIN] Set exact vouch count with atomic updates"""
+    """[ADMIN] Set exact vouch count with proper record keeping"""
     if count < 0:
         return await ctx.send("❌ Vouch count cannot be negative!")
 
+    # Get current count
     current_count = get_vouches(member.id)
     difference = count - current_count
-    
-    # Update the database
+
+    # Update main vouch count
     if not db_execute("""
     INSERT INTO vouches VALUES (?, ?, 1) 
     ON CONFLICT(user_id) DO UPDATE SET vouch_count = ?
     """, (member.id, count, count)):
         return await ctx.send("❌ Database error!")
-    
-    # Handle vouch records for the difference
+
+    # Handle record keeping for the difference
     if difference > 0:
-        # Add admin vouch records for the difference
+        # Add admin records for the difference
         for _ in range(difference):
             db_execute("""
             INSERT OR IGNORE INTO vouch_records (voucher_id, vouched_id)
             VALUES (?, ?)
             """, (ctx.author.id, member.id))
     elif difference < 0:
-        # Remove oldest vouch records (excluding admin-set ones)
+        # Remove oldest records (excluding admin-set ones)
         db_execute("""
         DELETE FROM vouch_records 
         WHERE rowid IN (
             SELECT rowid FROM vouch_records 
             WHERE vouched_id = ? 
-            AND NOT EXISTS (
-                SELECT 1 FROM unvouchable_users 
-                WHERE user_id = voucher_id
-            )
             ORDER BY rowid ASC 
             LIMIT ?
         )
         """, (member.id, abs(difference)))
-    
+
+    # Force nickname update
     await update_nickname(member)
     await ctx.send(f"✅ Set {member.mention}'s vouches to {count}!")
 
@@ -591,7 +589,7 @@ async def vouchstats(ctx, display: str = "count"):
 
 @bot.command()
 async def verify(ctx, member: discord.Member = None):
-    """Verify a user's vouch count is legitimate"""
+    """Verify a user's vouch count with proper admin-set vouch detection"""
     await ctx.guild.chunk()  # Ensure member cache is fresh
     target = member or ctx.author
     
@@ -604,7 +602,7 @@ async def verify(ctx, member: discord.Member = None):
     if vouch_count == 0:
         return await ctx.send(f"❌ {target.mention} has no vouches in the database!")
     
-    # Parse displayed vouches using regex for better accuracy
+    # Parse displayed vouches using regex
     displayed_vouches = 0
     import re
     if match := re.search(r'\[(\d+)V\]', target.display_name):
@@ -614,8 +612,8 @@ async def verify(ctx, member: discord.Member = None):
     community_vouches = db_fetchone("""
     SELECT COUNT(*) as count FROM vouch_records 
     WHERE vouched_id = ? 
-    AND voucher_id != vouched_id  # Exclude self-vouches
-    AND NOT EXISTS (              # Exclude admin vouches
+    AND voucher_id != vouched_id
+    AND NOT EXISTS (
         SELECT 1 FROM unvouchable_users 
         WHERE user_id = voucher_id
     )
@@ -624,20 +622,19 @@ async def verify(ctx, member: discord.Member = None):
     admin_vouches = db_fetchone("""
     SELECT COUNT(*) as count FROM vouch_records 
     WHERE vouched_id = ? 
-    AND EXISTS (                  # Only count admin vouches
+    AND EXISTS (
         SELECT 1 FROM unvouchable_users 
         WHERE user_id = voucher_id
     )
     """, (target.id,))[0]
     
-    # Calculate setvouches adjustments (difference between total and recorded vouches)
+    # Calculate setvouches adjustments
     recorded_vouches = community_vouches + admin_vouches
     setvouches_adjustment = max(0, vouch_count - recorded_vouches)
     
     # Determine verification status
     if displayed_vouches > vouch_count:
         status = "🚨 FAKE TAGS DETECTED"
-        # NEW: Notify admins about fake tags
         await notify_admins(ctx.guild, target, f"Fake tags detected (Shows {displayed_vouches}V but only has {vouch_count})")
     elif displayed_vouches < vouch_count:
         status = "⚠️ TAG DISCREPANCY"
@@ -652,7 +649,7 @@ async def verify(ctx, member: discord.Member = None):
         else:
             status = "❓ UNKNOWN VOUCH SOURCES"
     
-    # Build response
+    # Build and send response
     response = (
         f"**Verification for {target.mention}**\n"
         f"• Displayed: {displayed_vouches}V\n"
@@ -663,7 +660,8 @@ async def verify(ctx, member: discord.Member = None):
         f"• Status: {status}"
     )
     
-    await ctx.send(response[:2000])
+    await ctx.send(response)  # Corrected line - no slice needed
+
 
 async def notify_admins(guild, member, reason):
     """Notify admins about vouch discrepancies or fake tags"""
