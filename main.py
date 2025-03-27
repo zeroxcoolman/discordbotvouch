@@ -36,6 +36,7 @@ intents.members = True
 bot = commands.Bot(command_prefix="!", intents=intents)
 bot.vouch_spam = {}  # Anti-spam tracking
 bot.discrepancy_notifications = {}
+ADMIN_ALERTS_CHANNEL_ID = 1354897882271977744
 # Admin channel configuration
 STAFF_CHANNEL_NAME = "🎀︱staff-only"  # Change this to your desired channel name
 
