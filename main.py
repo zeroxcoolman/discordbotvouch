@@ -797,7 +797,7 @@ async def on_ready():
 async def on_raw_reaction_add(payload):
     """Handle admin responses to vouch notifications"""
     # Skip if not tracking or bot's own reactions
-    if (not hasattr(bot, 'discrepancy_notifications') or (payload.user_id == bot.user.id):
+    if not hasattr(bot, 'discrepancy_notifications') or payload.user_id == bot.user.id:
         return
     
     # Skip if not a tracked message
