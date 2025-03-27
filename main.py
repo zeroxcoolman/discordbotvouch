@@ -431,38 +431,42 @@ async def resetnick(ctx, member: discord.Member):
 @bot.command()
 @commands.check(is_admin)
 async def setvouches(ctx, member: discord.Member, count: int):
-    """[ADMIN] Set exact vouch count with proper admin tracking"""
+    """[ADMIN] Set vouch count with duplicate protection"""
     current = get_vouches(member.id)
     difference = count - current
     
-    # Update main count
-    db_execute("INSERT OR REPLACE INTO vouches VALUES (?, ?, 1)", (member.id, count))
-    
-    # Handle admin records
-    if difference > 0:
-        # Add admin vouches
-        for _ in range(difference):
-            db_execute("""
-            INSERT OR IGNORE INTO vouch_records (voucher_id, vouched_id)
-            VALUES (?, ?)
-            """, (ctx.author.id, member.id))
-    elif difference < 0:
-        # Remove oldest non-admin vouches
-        db_execute("""
-        DELETE FROM vouch_records 
-        WHERE rowid IN (
-            SELECT rowid FROM vouch_records 
-            WHERE vouched_id = ?
-            AND voucher_id NOT IN (
-                SELECT user_id FROM unvouchable_users
-            )
-            ORDER BY rowid ASC
-            LIMIT ?
-        )
-        """, (member.id, abs(difference)))
-    
-    await update_nickname(member)
-    await ctx.send(f"✅ Set {member.mention}'s vouches to {count}")
+    try:
+        with get_db() as conn:
+            # Update main count
+            conn.execute("""
+                INSERT OR REPLACE INTO vouches 
+                VALUES (?, ?, 1)
+                """, (member.id, count))
+            
+            # Handle adjustments
+            if difference > 0:
+                # Insert only if not exists
+                conn.executemany("""
+                    INSERT OR IGNORE INTO vouch_records 
+                    VALUES (?, ?)
+                    """, [(ctx.author.id, member.id)] * difference)
+            elif difference < 0:
+                # Delete oldest non-admin vouches
+                conn.execute("""
+                    DELETE FROM vouch_records 
+                    WHERE rowid IN (
+                        SELECT rowid FROM vouch_records 
+                        WHERE vouched_id = ?
+                        ORDER BY rowid ASC 
+                        LIMIT ?
+                    )
+                    """, (member.id, abs(difference)))
+        
+        await update_nickname(member)
+        await ctx.send(f"✅ Set {member.mention}'s vouches to {count}")
+    except sqlite3.Error as e:
+        await ctx.send(f"❌ Database error: {str(e)}")
+        print(f"Setvouches error: {traceback.format_exc()}")
 
 @bot.command()
 async def enablevouch(ctx):
@@ -522,34 +526,51 @@ async def disablevouches_all(ctx):
 @bot.command()
 @commands.check(is_admin)
 async def reconcile_vouches(ctx, member: discord.Member = None):
-    """[ADMIN] Fix mismatches between vouch counts and records"""
-    if member:
-        # Fix single user
-        vouch_count = get_vouches(member.id)
-        records = db_fetchone("SELECT COUNT(*) FROM vouch_records WHERE vouched_id = ?", (member.id,))[0]
-        needed = vouch_count - records
-        
-        if needed > 0:
-            db_execute("""
-            INSERT INTO vouch_records (voucher_id, vouched_id)
-            VALUES (?, ?)
-            """, (ctx.author.id, member.id))
-            await ctx.send(f"✅ Added {needed} admin vouch records for {member.mention}")
-        else:
-            await ctx.send(f"ℹ️ {member.mention}'s vouch records are already correct")
-    else:
-        # Fix all users
-        fixed = 0
-        users = db_fetchall("SELECT user_id, vouch_count FROM vouches WHERE vouch_count > 0")
-        for user in users:
-            records = db_fetchone("SELECT COUNT(*) FROM vouch_records WHERE vouched_id = ?", (user['user_id'],))[0]
-            if records < user['vouch_count']:
+    """[ADMIN] Fix vouch record mismatches safely"""
+    try:
+        if member:
+            # Single user reconciliation
+            vouch_count = get_vouches(member.id)
+            records = db_fetchone("SELECT COUNT(*) FROM vouch_records WHERE vouched_id = ?", (member.id,))[0]
+            
+            if vouch_count > records:
+                needed = vouch_count - records
                 db_execute("""
-                INSERT INTO vouch_records (voucher_id, vouched_id)
-                VALUES (?, ?)
-                """, (ctx.author.id, user['user_id']))
-                fixed += 1
-        await ctx.send(f"✅ Fixed {fixed} vouch record mismatches")
+                    INSERT OR IGNORE INTO vouch_records 
+                    SELECT DISTINCT ?, ? 
+                    WHERE NOT EXISTS (
+                        SELECT 1 FROM vouch_records 
+                        WHERE voucher_id = ? AND vouched_id = ?
+                    )
+                    LIMIT ?
+                    """, (ctx.author.id, member.id, ctx.author.id, member.id, needed))
+                await ctx.send(f"✅ Added {needed} admin records for {member.mention}")
+            else:
+                await ctx.send(f"ℹ️ {member.mention}'s records are correct")
+        else:
+            # Full server reconciliation
+            fixed = 0
+            users = db_fetchall("SELECT user_id, vouch_count FROM vouches WHERE vouch_count > 0")
+            
+            for user in users:
+                records = db_fetchone("SELECT COUNT(*) FROM vouch_records WHERE vouched_id = ?", (user['user_id'],))[0]
+                if records < user['vouch_count']:
+                    needed = user['vouch_count'] - records
+                    db_execute("""
+                        INSERT OR IGNORE INTO vouch_records 
+                        SELECT DISTINCT ?, ? 
+                        WHERE NOT EXISTS (
+                            SELECT 1 FROM vouch_records 
+                            WHERE voucher_id = ? AND vouched_id = ?
+                        )
+                        LIMIT ?
+                        """, (ctx.author.id, user['user_id'], ctx.author.id, user['user_id'], needed))
+                    fixed += needed
+            
+            await ctx.send(f"✅ Fixed {fixed} vouch record mismatches")
+    except sqlite3.Error as e:
+        await ctx.send(f"❌ Database error during reconciliation: {str(e)}")
+
 
 @bot.command()
 async def vouch_sources(ctx, member: discord.Member):
@@ -783,6 +804,15 @@ async def on_ready():
     print(f'Logged in as {bot.user.name}')
     # Add this to periodically clean old notifications:
     bot.loop.create_task(clean_old_notifications())
+
+@bot.event
+async def on_command_error(ctx, error):
+    if isinstance(error, commands.CommandNotFound):
+        if ctx.invoked_with == "myroles":
+            await ctx.send("❌ `!myroles` command doesn't exist. Did you mean `!myvouches`?")
+        return
+    # Let other errors be handled normally
+    raise error
 
 @bot.event
 async def on_raw_reaction_add(payload):
