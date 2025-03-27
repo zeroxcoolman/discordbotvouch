@@ -417,54 +417,42 @@ async def setvouches(ctx, member: discord.Member, count: int):
     if count < 0:
         return await ctx.send("❌ Vouch count cannot be negative!")
 
-    try:
-        # 1. FIRST FORCE A CLEAN BASE NAME
-        try:
-            current_nick = member.display_name
-            base_name = clean_nickname(current_nick)
-            if not base_name.strip() or any(b in base_name for b in ["[","]","［","］"]):
-                base_name = member.name
-            await member.edit(nick=base_name)  # Remove all tags first
-        except discord.HTTPException:
-            pass  # Skip if we can't reset nickname
-
-        # 2. UPDATE DATABASE (WITH ADMIN VOUCH RECORD)
-        current_count = get_vouches(member.id)
-        difference = count - current_count
-        
-        if not db_execute("""
-        INSERT INTO vouches VALUES (?, ?, 1) 
-        ON CONFLICT(user_id) DO UPDATE SET vouch_count = ?
-        """, (member.id, count, count)):
-            return await ctx.send("❌ Database error!")
-            
-        # MODIFIED: Better vouch record handling
-        if difference > 0:
-            # Add missing admin vouches
+    current_count = get_vouches(member.id)
+    difference = count - current_count
+    
+    # Update the database
+    if not db_execute("""
+    INSERT INTO vouches VALUES (?, ?, 1) 
+    ON CONFLICT(user_id) DO UPDATE SET vouch_count = ?
+    """, (member.id, count, count)):
+        return await ctx.send("❌ Database error!")
+    
+    # Handle vouch records for the difference
+    if difference > 0:
+        # Add admin vouch records for the difference
+        for _ in range(difference):
             db_execute("""
             INSERT OR IGNORE INTO vouch_records (voucher_id, vouched_id)
             VALUES (?, ?)
             """, (ctx.author.id, member.id))
-        elif difference < 0:
-            # NEW: Remove excess vouches (oldest first)
-            db_execute("""
-            DELETE FROM vouch_records 
-            WHERE rowid IN (
-                SELECT rowid FROM vouch_records 
-                WHERE vouched_id = ? 
-                ORDER BY rowid DESC 
-                LIMIT ?
+    elif difference < 0:
+        # Remove oldest vouch records (excluding admin-set ones)
+        db_execute("""
+        DELETE FROM vouch_records 
+        WHERE rowid IN (
+            SELECT rowid FROM vouch_records 
+            WHERE vouched_id = ? 
+            AND NOT EXISTS (
+                SELECT 1 FROM unvouchable_users 
+                WHERE user_id = voucher_id
             )
-            """, (member.id, abs(difference)))
-
-        # 3. FORCE FRESH NICKNAME UPDATE
-        await update_nickname(member)
-        await ctx.send(f"✅ Set {member.mention}'s vouches to {count}!")
-
-    except Exception as e:
-        error_msg = f"⚠️ Partial success: Vouches set but nickname may need manual fix ({str(e)[:100]})"
-        await ctx.send(error_msg)
-        db_execute("UPDATE vouches SET vouch_count = ? WHERE user_id = ?", (count, member.id))
+            ORDER BY rowid ASC 
+            LIMIT ?
+        )
+        """, (member.id, abs(difference)))
+    
+    await update_nickname(member)
+    await ctx.send(f"✅ Set {member.mention}'s vouches to {count}!")
 
 @bot.command()
 async def enablevouch(ctx):
@@ -642,25 +630,27 @@ async def verify(ctx, member: discord.Member = None):
     )
     """, (target.id,))[0]
     
-    # Calculate unaccounted vouches (setvouches adjustments)
-    unaccounted = max(0, vouch_count - community_vouches - admin_vouches)
+    # Calculate setvouches adjustments (difference between total and recorded vouches)
+    recorded_vouches = community_vouches + admin_vouches
+    setvouches_adjustment = max(0, vouch_count - recorded_vouches)
     
     # Determine verification status
     if displayed_vouches > vouch_count:
         status = "🚨 FAKE TAGS DETECTED"
+        # NEW: Notify admins about fake tags
+        await notify_admins(ctx.guild, target, f"Fake tags detected (Shows {displayed_vouches}V but only has {vouch_count})")
     elif displayed_vouches < vouch_count:
         status = "⚠️ TAG DISCREPANCY"
-        await notify_admins(ctx.guild, target, "Tag discrepancy")
+        await notify_admins(ctx.guild, target, f"Tag discrepancy (Shows {displayed_vouches}V but has {vouch_count})")
     elif community_vouches == vouch_count:
         status = "✅ FULLY VERIFIED"
     else:
-        ratio = (admin_vouches + unaccounted) / vouch_count
-        if ratio > 0.75:
-            status = "⚠️ MOSTLY ADMIN VOUCHES"
-        elif ratio > 0.45:
-            status = "⚠️ HALF ADMIN VOUCHES"
+        if setvouches_adjustment > 0:
+            status = f"⚠️ {setvouches_adjustment} VOUCHES SET BY ADMINS"
+        elif admin_vouches > 0:
+            status = f"⚠️ {admin_vouches} ADMIN VOUCHES"
         else:
-            status = "⚠️ SOME ADMIN VOUCHES"
+            status = "❓ UNKNOWN VOUCH SOURCES"
     
     # Build response
     response = (
@@ -668,15 +658,15 @@ async def verify(ctx, member: discord.Member = None):
         f"• Displayed: {displayed_vouches}V\n"
         f"• Database: {vouch_count} vouches\n"
         f"• Community: {community_vouches}\n"
-        f"• Admin: {admin_vouches + unaccounted}\n"
+        f"• Admin: {admin_vouches}\n"
+        f"• Set by Admins: {setvouches_adjustment}\n"
         f"• Status: {status}"
     )
     
     await ctx.send(response[:2000])
 
-
 async def notify_admins(guild, member, reason):
-    """Notify admins about a vouch discrepancy"""
+    """Notify admins about vouch discrepancies or fake tags"""
     admin_roles = ["Administrator™🌟", "𝓞𝔀𝓷𝓮𝓻 👑", "𓂀 𝒞𝑜-𝒪𝓌𝓃𝑒𝓻 𓂀✅"]
     
     # Find all admins and owners
@@ -688,28 +678,42 @@ async def notify_admins(guild, member, reason):
     # Remove duplicates
     recipients = list(set(recipients))
     
+    # Create an embed for the notification
+    embed = discord.Embed(
+        title="⚠️ Vouch Alert ⚠️",
+        color=discord.Color.red() if "FAKE" in reason else discord.Color.orange()
+    )
+    
+    if "FAKE" in reason:
+        embed.description = f"**Fake tags detected for {member.mention}**"
+        embed.add_field(name="Recommended Action", value="Consider resetting vouches and nickname", inline=False)
+    else:
+        embed.description = f"**Vouch discrepancy for {member.mention}**"
+        embed.add_field(name="Recommended Action", value="Verify and update if needed", inline=False)
+    
+    embed.add_field(name="Details", value=reason, inline=False)
+    embed.add_field(name="Current Vouches", value=get_vouches(member.id))
+    embed.set_footer(text="React with ✅ to reset or ❌ to ignore")
+    
     # Send DM to each admin
     for admin in recipients:
         try:
-            embed = discord.Embed(
-                title="Vouch Discrepancy Detected",
-                description=f"Should we reset {member.mention}'s vouches?",
-                color=discord.Color.orange()
-            )
-            embed.add_field(name="Reason", value=reason)
-            embed.add_field(name="Current Vouches", value=get_vouches(member.id))
-            embed.set_footer(text="Reply with 'yes' or 'no'")
-            
             msg = await admin.send(embed=embed)
             
             # Add reactions for quick response
             await msg.add_reaction("✅")  # Yes
             await msg.add_reaction("❌")   # No
             
+            # Initialize notification tracking if not exists
+            if not hasattr(bot, 'discrepancy_notifications'):
+                bot.discrepancy_notifications = {}
+            
             # Store the message info for handling responses
-            bot.dispatch("discrepancy_notification", admin.id, member.id, msg.id)
+            bot.discrepancy_notifications[msg.id] = (admin.id, member.id, msg.id)
+            
         except discord.Forbidden:
             print(f"Could not send DM to {admin}")
+
 @bot.command()
 async def myvouches(ctx):
     """Check your own vouch count and status"""
@@ -753,9 +757,11 @@ async def backup_db(ctx):
         await ctx.send(f"❌ Backup failed: {str(e)}")
 @bot.event
 async def on_raw_reaction_add(payload):
-    """Handle admin responses to discrepancy notifications"""
-    # Check if this is a response to a discrepancy notification
-    if hasattr(bot, 'discrepancy_notifications') and payload.message_id in bot.discrepancy_notifications:
+    """Handle admin responses to vouch notifications"""
+    if not hasattr(bot, 'discrepancy_notifications'):
+        return
+    
+    if payload.message_id in bot.discrepancy_notifications:
         admin_id, member_id, message_id = bot.discrepancy_notifications[payload.message_id]
         
         # Only process reactions from the intended admin
@@ -764,14 +770,21 @@ async def on_raw_reaction_add(payload):
             member = guild.get_member(member_id)
             admin = guild.get_member(admin_id)
             
-            if str(payload.emoji) == "✅":  # Yes
+            if str(payload.emoji) == "✅":  # Yes - reset vouches
                 # Reset vouches
                 db_execute("UPDATE vouches SET vouch_count = 0 WHERE user_id = ?", (member.id,))
                 db_execute("DELETE FROM vouch_records WHERE vouched_id = ?", (member.id,))
-                await update_nickname(member)
-                await admin.send(f"✅ Reset vouches for {member.mention}")
-            elif str(payload.emoji) == "❌":  # No
-                await admin.send(f"❌ Did not reset vouches for {member.mention}")
+                
+                # Reset nickname
+                try:
+                    await member.edit(nick=clean_nickname(member.display_name))
+                except discord.HTTPException:
+                    pass
+                
+                await admin.send(f"✅ Reset vouches and nickname for {member.mention}")
+                
+            elif str(payload.emoji) == "❌":  # No - ignore
+                await admin.send(f"❌ No action taken for {member.mention}")
             
             # Remove the notification from tracking
             del bot.discrepancy_notifications[message_id]
