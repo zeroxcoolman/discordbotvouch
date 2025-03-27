@@ -313,15 +313,38 @@ async def clearvouches_all(ctx):
 @bot.command()
 @commands.check(is_admin)
 async def fixnicks(ctx):
-    """[ADMIN] Force-clean all nicknames with vouch tags"""
+    """[ADMIN] Force-clean ALL nicknames"""
     count = 0
-    for member in ctx.guild.members:
-        if is_tracking_enabled(member.id):
-            await update_nickname(member)
-            count += 1
-            await asyncio.sleep(0.5)  # Rate limiting
+    failed = 0
     
-    await ctx.send(f"♻️ Force-updated {count} nicknames!")
+    await ctx.send("🔄 Starting nickname cleanup...")
+    
+    for member in ctx.guild.members:
+        try:
+            if is_tracking_enabled(member.id):
+                # First completely clean the nickname
+                base_name = clean_nickname(member.display_name)
+                await member.edit(nick=base_name)
+                
+                # Then properly update with tags
+                await update_nickname(member)
+                count += 1
+                await asyncio.sleep(0.5)  # Rate limiting
+        except Exception:
+            failed += 1
+    
+    await ctx.send(f"✅ Successfully updated {count} nicknames ({failed} failed)")
+
+@bot.command()
+@commands.check(is_admin)
+async def resetnick(ctx, member: discord.Member):
+    """[ADMIN] Completely reset a user's nickname"""
+    base_name = clean_nickname(member.display_name)
+    try:
+        await member.edit(nick=base_name)
+        await ctx.send(f"✅ Reset {member.mention}'s nickname!")
+    except discord.HTTPException:
+        await ctx.send("❌ Failed to reset nickname (missing permissions)")
 
 @bot.command()
 @commands.check(is_admin)
