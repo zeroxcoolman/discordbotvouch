@@ -32,6 +32,9 @@ intents.message_content = True
 intents.members = True
 bot = commands.Bot(command_prefix="!", intents=intents)
 bot.vouch_spam = {}  # Anti-spam tracking
+bot.discrepancy_notifications = {}
+# Admin channel configuration
+ADMIN_CHANNEL_NAME = "🎀︱staff-only"  # Change this to your desired channel name
 
 # Database setup with error handling
 def get_db():
@@ -145,6 +148,21 @@ def is_unvouchable(user_id):
 def has_vouched(voucher_id, vouched_id):
     row = db_fetchone("SELECT 1 FROM vouch_records WHERE voucher_id = ? AND vouched_id = ?", (voucher_id, vouched_id))
     return row is not None
+
+# Add this with your other utility functions (around line 100)
+async def clean_old_notifications():
+    """Clean up old notification records"""
+    while True:
+        await asyncio.sleep(3600)  # Every hour
+        current_time = time.time()
+        to_delete = []
+        
+        for msg_id, data in bot.discrepancy_notifications.items():
+            if current_time - data.get('timestamp', 0) > 86400:  # 24 hours
+                to_delete.append(msg_id)
+        
+        for msg_id in to_delete:
+            del bot.discrepancy_notifications[msg_id]
 
 async def update_nickname(member):
     """Atomic nickname update with verification"""
@@ -664,7 +682,7 @@ async def verify(ctx, member: discord.Member = None):
 
 
 async def notify_admins(guild, member, reason):
-    """Notify admins about vouch discrepancies or fake tags with fallback options"""
+    """Notify admins about vouch discrepancies or fake tags"""
     admin_roles = ["Administrator™🌟", "𝓞𝔀𝓷𝓮𝓻 👑", "𓂀 𝒞𝑜-𝒪𝓌𝓃𝑒𝓻 𓂀✅"]
     
     # Find all admins and owners
@@ -676,64 +694,55 @@ async def notify_admins(guild, member, reason):
     # Remove duplicates and bots
     recipients = list({m for m in recipients if not m.bot})
     
-    # Find a suitable notification channel (e.g., first channel named 'admin' or 'mods')
-    notification_channel = None
-    for channel in guild.text_channels:
-        if 'admin' in channel.name.lower() or 'mod' in channel.name.lower():
-            notification_channel = channel
-            break
+    # Find the admin channel
+    admin_channel = discord.utils.get(guild.text_channels, name=ADMIN_CHANNEL_NAME)
     
-    # Create the embed
+    # Create embed
     embed = discord.Embed(
         title="⚠️ Vouch Alert ⚠️",
         color=discord.Color.red() if "FAKE" in reason else discord.Color.orange()
     )
-    
-    if "FAKE" in reason:
-        embed.description = f"**Fake tags detected for {member.mention}**"
-        embed.add_field(name="Recommended Action", value="Consider resetting vouches and nickname", inline=False)
-    else:
-        embed.description = f"**Vouch discrepancy for {member.mention}**"
-        embed.add_field(name="Recommended Action", value="Verify and update if needed", inline=False)
-    
-    embed.add_field(name="Details", value=reason, inline=False)
+    embed.description = f"**Issue detected with {member.mention}**"
+    embed.add_field(name="Reason", value=reason, inline=False)
     embed.add_field(name="Current Vouches", value=get_vouches(member.id))
+    embed.set_footer(text="React with ✅ to reset or ❌ to ignore")
     
-    # Try DM first, then fallback to channel
+    # Try DM first
     notified = False
     for admin in recipients:
         try:
             msg = await admin.send(embed=embed)
-            await msg.add_reaction("✅")  # Yes
-            await msg.add_reaction("❌")   # No
+            await msg.add_reaction("✅")
+            await msg.add_reaction("❌")
             
-            # Initialize notification tracking if not exists
-            if not hasattr(bot, 'discrepancy_notifications'):
-                bot.discrepancy_notifications = {}
-            
-            # Store the message info for handling responses
-            bot.discrepancy_notifications[msg.id] = (admin.id, member.id, msg.id)
+            bot.discrepancy_notifications[msg.id] = {
+                'admin_id': admin.id,
+                'member_id': member.id,
+                'message_id': msg.id,
+                'timestamp': time.time()
+            }
             notified = True
-            
         except discord.Forbidden:
-            continue  # Skip if can't DM this admin
+            continue
     
-    # If no DMs succeeded and we have a notification channel
-    if not notified and notification_channel:
+    # Fallback to admin channel if DMs failed
+    if not notified and admin_channel:
         try:
-            msg = await notification_channel.send(
+            msg = await admin_channel.send(
                 content=" ".join(m.mention for m in recipients),
                 embed=embed
             )
             await msg.add_reaction("✅")
             await msg.add_reaction("❌")
             
-            if not hasattr(bot, 'discrepancy_notifications'):
-                bot.discrepancy_notifications = {}
-            
-            bot.discrepancy_notifications[msg.id] = (guild.me.id, member.id, msg.id)
+            bot.discrepancy_notifications[msg.id] = {
+                'admin_id': guild.me.id,  # Bot's ID for channel messages
+                'member_id': member.id,
+                'message_id': msg.id,
+                'timestamp': time.time()
+            }
         except discord.Forbidden:
-            print("Couldn't send notification to channel either")
+            print(f"Couldn't send to admin channel {ADMIN_CHANNEL_NAME}")
 
 
 @bot.command()
@@ -777,36 +786,47 @@ async def backup_db(ctx):
             await ctx.send("Database backup:", file=discord.File(f, 'vouches_backup.db'))
     except Exception as e:
         await ctx.send(f"❌ Backup failed: {str(e)}")
+
+@bot.event
+async def on_ready():
+    print(f'Logged in as {bot.user.name}')
+    # Add this to periodically clean old notifications:
+    bot.loop.create_task(clean_old_notifications())
+
 @bot.event
 async def on_raw_reaction_add(payload):
-    """Handle admin responses to vouch notifications from both DMs and channels"""
-    if not hasattr(bot, 'discrepancy_notifications'):
+    """Handle admin responses to vouch notifications"""
+    # Skip if not tracking or bot's own reactions
+    if (not hasattr(bot, 'discrepancy_notifications') or (payload.user_id == bot.user.id):
         return
     
-    if payload.message_id in bot.discrepancy_notifications:
-        admin_id, member_id, message_id = bot.discrepancy_notifications[payload.message_id]
-        
-        # Get the guild and members
+    # Skip if not a tracked message
+    if payload.message_id not in bot.discrepancy_notifications:
+        return
+    
+    try:
+        data = bot.discrepancy_notifications[payload.message_id]
         guild = bot.get_guild(payload.guild_id)
-        member = guild.get_member(member_id)
-        
-        # Check if this was a channel message (admin_id is bot's ID)
-        if admin_id == guild.me.id:
-            # Channel message - get the reacting admin
-            channel = guild.get_channel(payload.channel_id)
-            try:
-                admin = await guild.fetch_member(payload.user_id)
-            except discord.NotFound:
-                return
-        else:
-            # DM message - use stored admin_id
-            admin = guild.get_member(admin_id)
-        
-        # Only process reactions from admins
-        if not admin or not any(role.name in ["Administrator™🌟", "𝓞𝔀𝓷𝓮𝓻 👑", "𓂀 𝒞𝑜-𝒪𝓌𝓃𝑒𝓻 𓂀✅"] for role in admin.roles):
+        if not guild:
             return
         
-        if str(payload.emoji) == "✅":  # Yes - reset vouches
+        # Get the member being vouched for
+        member = guild.get_member(data['member_id']) or await guild.fetch_member(data['member_id'])
+        
+        # Get the admin who reacted
+        if data['admin_id'] == guild.me.id:  # Channel message
+            channel = guild.get_channel(payload.channel_id)
+            admin = await guild.fetch_member(payload.user_id)
+        else:  # DM message
+            admin = guild.get_member(data['admin_id']) or await guild.fetch_member(data['admin_id'])
+        
+        # Verify admin role
+        admin_roles = ["Administrator™🌟", "𝓞𝔀𝓷𝓮𝓻 👑", "𓂀 𝒞𝑜-𝒪𝓌𝓃𝑒𝓻 𓂀✅"]
+        if not admin or not any(role.name in admin_roles for role in admin.roles):
+            return
+        
+        # Handle the reaction
+        if str(payload.emoji) == "✅":  # Approve
             db_execute("UPDATE vouches SET vouch_count = 0 WHERE user_id = ?", (member.id,))
             db_execute("DELETE FROM vouch_records WHERE vouched_id = ?", (member.id,))
             try:
@@ -814,26 +834,32 @@ async def on_raw_reaction_add(payload):
             except discord.HTTPException:
                 pass
             
-            # Send confirmation where the reaction came from
+            # Send confirmation
             try:
-                if admin_id == guild.me.id:  # Channel message
+                if data['admin_id'] == guild.me.id:  # Channel
                     await channel.send(f"✅ {admin.mention} reset vouches for {member.mention}")
                 else:  # DM
-                    await admin.send(f"✅ Reset vouches and nickname for {member.mention}")
+                    await admin.send(f"✅ Reset vouches for {member.mention}")
             except discord.Forbidden:
                 pass
             
-        elif str(payload.emoji) == "❌":  # No - ignore
+        elif str(payload.emoji) == "❌":  # Reject
             try:
-                if admin_id == guild.me.id:  # Channel message
+                if data['admin_id'] == guild.me.id:  # Channel
                     await channel.send(f"❌ {admin.mention} chose not to reset {member.mention}")
                 else:  # DM
                     await admin.send(f"❌ No action taken for {member.mention}")
             except discord.Forbidden:
                 pass
         
-        # Remove the notification from tracking
-        del bot.discrepancy_notifications[message_id]
+        # Clean up
+        del bot.discrepancy_notifications[payload.message_id]
+        
+    except Exception as e:
+        print(f"Error handling reaction: {e}")
+        # Remove problematic notification to prevent repeated errors
+        if payload.message_id in bot.discrepancy_notifications:
+            del bot.discrepancy_notifications[payload.message_id]
 
 keep_alive()
 bot.run(TOKEN)
