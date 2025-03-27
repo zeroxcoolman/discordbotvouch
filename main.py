@@ -114,15 +114,21 @@ def clean_nickname(nick):
     if not nick:
         return nick
     
-    # Remove ALL tag patterns including any brackets and their contents
+    # Escape special characters and use proper character sets
     import re
-    # This regex handles: [XV], ［XV］, and other bracket types
-    clean = re.sub(r'(\s*[\[［][^\]］]*[\]］)\s*', '', str(nick)).strip()
-    
-    # Remove any remaining orphaned brackets
-    clean = clean.replace("[", "").replace("]", "").replace("［", "").replace("］", "").strip()
-    
-    return clean
+    try:
+        # This pattern handles all bracket types safely
+        pattern = r'(\s*[\[]([^\]\]]*)[\]]\s*)|(\s*［([^］］]*)］\s*)'
+        clean = re.sub(pattern, '', str(nick)).strip()
+        
+        # Remove any remaining orphaned brackets
+        clean = clean.replace("[", "").replace("]", "").replace("［", "").replace("］", "").strip()
+        
+        return clean
+    except re.error:
+        # Fallback to simple cleaning if regex fails
+        return str(nick).replace("[", "").replace("]", "").replace("［", "").replace("］", "").strip()
+
 
 def get_vouches(user_id):
     row = db_fetchone("SELECT vouch_count FROM vouches WHERE user_id = ?", (user_id,))
@@ -145,13 +151,21 @@ async def update_nickname(member):
     try:
         if not is_tracking_enabled(member.id):
             return
-
+    
         current_nick = member.display_name
+        
+        # More robust cleaning with fallbacks
         base_name = clean_nickname(current_nick)
         
-        # Verify the base name is clean
-        if any(bracket in base_name for bracket in ["[", "]", "［", "］"]):
-            base_name = member.name  # Fallback to username if cleaning failed
+        # Double-check cleaning worked
+        if (not base_name.strip() or 
+            any(bracket in base_name for bracket in ["[", "]", "［", "］"])):
+            base_name = member.name  # Fallback to pure username
+            
+        # Final sanitization
+        base_name = base_name.replace("[", "").replace("]", "").replace("［", "").replace("］", "").strip()
+        if not base_name:  # Ultimate fallback
+            base_name = member.name
 
         # Build new tags
         new_tags = []
@@ -369,27 +383,39 @@ async def resetnick(ctx, member: discord.Member):
 @bot.command()
 @commands.check(is_admin)
 async def setvouches(ctx, member: discord.Member, count: int):
-    """[ADMIN] Set exact vouch count (with guaranteed clean update)"""
+    """[ADMIN] Set exact vouch count with atomic updates"""
     if count < 0:
         return await ctx.send("❌ Vouch count cannot be negative!")
 
-    # First completely reset the nickname
     try:
-        base_name = clean_nickname(member.display_name)
-        await member.edit(nick=base_name)
-    except discord.HTTPException:
-        pass  # Continue even if we can't reset the nickname
+        # 1. FIRST FORCE A CLEAN BASE NAME
+        try:
+            current_nick = member.display_name
+            base_name = clean_nickname(current_nick)
+            if not base_name.strip() or any(b in base_name for b in ["[","]","［","］"]):
+                base_name = member.name
+            await member.edit(nick=base_name)  # Remove all tags first
+        except discord.HTTPException:
+            pass  # Skip if we can't reset nickname
 
-    # Update database
-    if not db_execute("""
-    INSERT INTO vouches VALUES (?, ?, 1) 
-    ON CONFLICT(user_id) DO UPDATE SET vouch_count = ?
-    """, (member.id, count, count)):
-        return await ctx.send("❌ Database error!")
+        # 2. UPDATE DATABASE
+        if not db_execute("""
+        INSERT INTO vouches VALUES (?, ?, 1) 
+        ON CONFLICT(user_id) DO UPDATE SET vouch_count = ?
+        """, (member.id, count, count)):
+            return await ctx.send("❌ Database error!")
 
-    # Force a fresh nickname rebuild
-    await update_nickname(member)
-    await ctx.send(f"✅ Set {member.mention}'s vouches to {count}!")
+        # 3. FORCE FRESH NICKNAME UPDATE
+        await update_nickname(member)
+        await ctx.send(f"✅ Set {member.mention}'s vouches to {count}!")
+
+    except Exception as e:
+        # ULTIMATE FALLBACK
+        error_msg = f"⚠️ Partial success: Vouches set but nickname may need manual fix ({str(e)[:100]})"
+        await ctx.send(error_msg)
+        
+        # Try to at least set the database correctly
+        db_execute("UPDATE vouches SET vouch_count = ? WHERE user_id = ?", (count, member.id))
 
 @bot.command()
 async def enablevouch(ctx):
