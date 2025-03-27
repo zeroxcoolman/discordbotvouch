@@ -408,11 +408,24 @@ async def setvouches(ctx, member: discord.Member, count: int):
         """, (member.id, count, count)):
             return await ctx.send("❌ Database error!")
             
-        # Add admin vouch record if increasing vouches
+        # MODIFIED: Better vouch record handling
         if difference > 0:
+            # Add missing admin vouches
             db_execute("""
-            INSERT OR IGNORE INTO vouch_records VALUES (?, ?)
+            INSERT OR IGNORE INTO vouch_records (voucher_id, vouched_id)
+            VALUES (?, ?)
             """, (ctx.author.id, member.id))
+        elif difference < 0:
+            # NEW: Remove excess vouches (oldest first)
+            db_execute("""
+            DELETE FROM vouch_records 
+            WHERE rowid IN (
+                SELECT rowid FROM vouch_records 
+                WHERE vouched_id = ? 
+                ORDER BY rowid DESC 
+                LIMIT ?
+            )
+            """, (member.id, abs(difference)))
 
         # 3. FORCE FRESH NICKNAME UPDATE
         await update_nickname(member)
@@ -421,14 +434,6 @@ async def setvouches(ctx, member: discord.Member, count: int):
     except Exception as e:
         error_msg = f"⚠️ Partial success: Vouches set but nickname may need manual fix ({str(e)[:100]})"
         await ctx.send(error_msg)
-        db_execute("UPDATE vouches SET vouch_count = ? WHERE user_id = ?", (count, member.id))
-
-    except Exception as e:
-        # ULTIMATE FALLBACK
-        error_msg = f"⚠️ Partial success: Vouches set but nickname may need manual fix ({str(e)[:100]})"
-        await ctx.send(error_msg)
-        
-        # Try to at least set the database correctly
         db_execute("UPDATE vouches SET vouch_count = ? WHERE user_id = ?", (count, member.id))
 
 @bot.command()
@@ -487,6 +492,62 @@ async def disablevouches_all(ctx):
     await ctx.send(f"✅ Disabled tracking for {count} users!")
 
 @bot.command()
+@commands.check(is_admin)
+async def reconcile_vouches(ctx, member: discord.Member = None):
+    """[ADMIN] Fix mismatches between vouch counts and records"""
+    if member:
+        # Fix single user
+        vouch_count = get_vouches(member.id)
+        records = db_fetchone("SELECT COUNT(*) FROM vouch_records WHERE vouched_id = ?", (member.id,))[0]
+        needed = vouch_count - records
+        
+        if needed > 0:
+            db_execute("""
+            INSERT INTO vouch_records (voucher_id, vouched_id)
+            VALUES (?, ?)
+            """, (ctx.author.id, member.id))
+            await ctx.send(f"✅ Added {needed} admin vouch records for {member.mention}")
+        else:
+            await ctx.send(f"ℹ️ {member.mention}'s vouch records are already correct")
+    else:
+        # Fix all users
+        fixed = 0
+        users = db_fetchall("SELECT user_id, vouch_count FROM vouches WHERE vouch_count > 0")
+        for user in users:
+            records = db_fetchone("SELECT COUNT(*) FROM vouch_records WHERE vouched_id = ?", (user['user_id'],))[0]
+            if records < user['vouch_count']:
+                db_execute("""
+                INSERT INTO vouch_records (voucher_id, vouched_id)
+                VALUES (?, ?)
+                """, (ctx.author.id, user['user_id']))
+                fixed += 1
+        await ctx.send(f"✅ Fixed {fixed} vouch record mismatches")
+
+@bot.command()
+async def vouch_sources(ctx, member: discord.Member):
+    """Check where a user's vouches came from"""
+    vouchers = db_fetchall("""
+    SELECT voucher_id, COUNT(*) as count 
+    FROM vouch_records 
+    WHERE vouched_id = ?
+    GROUP BY voucher_id
+    """, (member.id,))
+    
+    if not vouchers:
+        return await ctx.send(f"❌ No vouch records found for {member.mention}")
+    
+    lines = []
+    for v in vouchers:
+        user = ctx.guild.get_member(v['voucher_id'])
+        name = user.mention if user else f"Unknown User ({v['voucher_id']})"
+        lines.append(f"{name}: {v['count']} vouches")
+    
+    await ctx.send(
+        f"**Vouch Sources for {member.mention}**\n" +
+        "\n".join(lines)[:2000]
+    )
+
+@bot.command()
 async def vouchstats(ctx, display: str = "count"):
     """View vouch statistics"""
     enabled_users = db_fetchall("SELECT user_id FROM vouches WHERE tracking_enabled = 1")
@@ -525,74 +586,60 @@ async def verify(ctx, member: discord.Member = None):
     if vouch_count == 0:
         return await ctx.send(f"❌ {target.mention} has no vouches in the database!")
     
-    # Parse displayed vouches
+    # Parse displayed vouches using regex for better accuracy
     displayed_vouches = 0
-    if "[" in target.display_name and "]" in target.display_name:
-        tag_part = target.display_name.split("[")[-1].split("]")[0]
-        for part in tag_part.split(","):
-            part = part.strip()
-            if part.endswith("V"):
-                try:
-                    displayed_vouches = int(part[:-1])
-                    break
-                except ValueError:
-                    continue
+    import re
+    if match := re.search(r'\[(\d+)V\]', target.display_name):
+        displayed_vouches = int(match.group(1))
     
-    # Get verification data - MODIFIED SECTION
-    legit_vouches = db_fetchall("""
+    # Get verification data
+    community_vouches = db_fetchone("""
     SELECT COUNT(*) as count FROM vouch_records 
     WHERE vouched_id = ? 
     AND voucher_id != vouched_id  # Exclude self-vouches
-    """, (target.id,))
+    AND NOT EXISTS (              # Exclude admin vouches
+        SELECT 1 FROM unvouchable_users 
+        WHERE user_id = voucher_id
+    )
+    """, (target.id,))[0]
     
-    admin_vouches = db_fetchall("""
+    admin_vouches = db_fetchone("""
     SELECT COUNT(*) as count FROM vouch_records 
     WHERE vouched_id = ? 
-    AND voucher_id = ?  # Only count admin-set vouches
-    """, (target.id, ctx.guild.owner_id))  # Or your admin user ID
+    AND EXISTS (                  # Only count admin vouches
+        SELECT 1 FROM unvouchable_users 
+        WHERE user_id = voucher_id
+    )
+    """, (target.id,))[0]
     
-    legit_count = legit_vouches[0]['count'] if legit_vouches else 0
-    admin_count = admin_vouches[0]['count'] if admin_vouches else 0
+    # Calculate unaccounted vouches (setvouches adjustments)
+    unaccounted = max(0, vouch_count - community_vouches - admin_vouches)
     
-    # Calculate unaccounted vouches (should match admin_vouches)
-    unaccounted = vouch_count - legit_count - admin_count
-    
-    # Determine admin vouch level
-    admin_vouch_level = ""
-    total_admin_vouches = admin_count + unaccounted
-    if total_admin_vouches > 0:
-        ratio = total_admin_vouches / vouch_count
-        if ratio > 0.75:
-            admin_vouch_level = "MOSTLY ADMIN VOUCHES"
-        elif ratio > 0.45:
-            admin_vouch_level = "HALF ADMIN VOUCHES"
-        else:
-            admin_vouch_level = "SOME ADMIN VOUCHES"
-    
-    # Verification logic
-    fake_tags = (displayed_vouches > vouch_count)
-    nickname_valid = (displayed_vouches == vouch_count)
-    
-    if fake_tags:
-        verification = "🚨 FAKE TAGS DETECTED"
-    elif not nickname_valid:
-        verification = "⚠️ TAG DISCREPANCY"
+    # Determine verification status
+    if displayed_vouches > vouch_count:
+        status = "🚨 FAKE TAGS DETECTED"
+    elif displayed_vouches < vouch_count:
+        status = "⚠️ TAG DISCREPANCY"
         await notify_admins(ctx.guild, target, "Tag discrepancy")
-    elif legit_count == vouch_count:
-        verification = "✅ FULLY VERIFIED"
-    elif total_admin_vouches > 0:
-        verification = f"⚠️ {admin_vouch_level} ({total_admin_vouches}/{vouch_count})"
+    elif community_vouches == vouch_count:
+        status = "✅ FULLY VERIFIED"
     else:
-        verification = "❌ DATABASE INCONSISTENCY"
+        ratio = (admin_vouches + unaccounted) / vouch_count
+        if ratio > 0.75:
+            status = "⚠️ MOSTLY ADMIN VOUCHES"
+        elif ratio > 0.45:
+            status = "⚠️ HALF ADMIN VOUCHES"
+        else:
+            status = "⚠️ SOME ADMIN VOUCHES"
     
     # Build response
     response = (
         f"**Verification for {target.mention}**\n"
         f"• Displayed: {displayed_vouches}V\n"
         f"• Database: {vouch_count} vouches\n"
-        f"• Community vouches: {legit_count}\n"
-        f"• Admin vouches: {total_admin_vouches}\n"
-        f"• Status: {verification}"
+        f"• Community: {community_vouches}\n"
+        f"• Admin: {admin_vouches + unaccounted}\n"
+        f"• Status: {status}"
     )
     
     await ctx.send(response[:2000])
