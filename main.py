@@ -110,15 +110,16 @@ def is_admin(ctx):
     return any(role.name in admin_roles for role in ctx.author.roles)
 
 def clean_nickname(nick):
-    """Remove all vouch-related tags from a nickname"""
+    """Completely remove all vouch-related tags from a nickname"""
     if not nick:
-        return ""
+        return nick
     
-    # Remove everything after the first [
-    clean = nick.split('[')[0].strip()
+    # Remove ALL tag patterns including [XV], [X V], [unvouchable], etc.
+    import re
+    clean = re.sub(r'(\s*\[[^\]]*\])+$', '', str(nick)).strip()
     
-    # Remove any remaining brackets just in case
-    clean = clean.replace('[', '').replace(']', '').strip()
+    # Remove any remaining orphaned brackets
+    clean = clean.replace("[", "").replace("]", "").strip()
     
     return clean
 
@@ -146,40 +147,43 @@ async def update_nickname(member):
         vouches = get_vouches(member.id)
         current_nick = member.display_name
 
-        # Remove ALL existing vouch-related tags (both [XV] and [unvouchable])
-        base_name = current_nick
-        if '[' in base_name and ']' in base_name:
-            # Remove everything after the last '[' including the bracket
-            base_name = base_name.split('[')[0].strip()
+        # Completely clean the nickname
+        base_name = clean_nickname(current_nick)
+
+        # Only add tags if they don't already exist with correct values
+        new_tags = []
+        current_tags = []
         
-        # Remove any remaining tags that might be stuck
-        base_name = base_name.replace('[', '').replace(']', '').strip()
+        # Parse existing tags if any
+        if '[' in current_nick and ']' in current_nick:
+            tag_part = current_nick.split('[')[-1].split(']')[0]
+            current_tags = [t.strip() for t in tag_part.split(',')]
 
-        # Prepare new tags
-        tags = []
+        # Determine what tags should exist
+        expected_tags = []
         if vouches > 0:
-            tags.append(f"{vouches}V")
+            expected_tags.append(f"{vouches}V")
         if is_unvouchable(member.id):
-            tags.append("unvouchable")
+            expected_tags.append("unvouchable")
 
-        # Construct new nickname
-        if tags:
-            new_nick = f"{base_name} [{', '.join(tags)}]"
-            # Ensure proper formatting (replace brackets with full-width if needed)
-            new_nick = new_nick.replace("[", "［").replace("]", "］")
-        else:
-            new_nick = base_name  # No tags needed
+        # Only update if tags don't match
+        if set(current_tags) != set(expected_tags):
+            if expected_tags:
+                new_nick = f"{base_name} [{', '.join(expected_tags)}]"
+                new_nick = new_nick.replace("[", "［").replace("]", "］")
+            else:
+                new_nick = base_name
 
-        # Ensure nickname length is within limits
-        new_nick = new_nick[:32]
+            # Ensure nickname length is within limits
+            new_nick = new_nick[:32]
 
-        if new_nick != current_nick:
-            try:
-                await member.edit(nick=new_nick)
-            except (discord.Forbidden, discord.HTTPException) as e:
-                print(f"Couldn't update {member.display_name}'s nickname: {e}")
+            if new_nick != current_nick:
+                try:
+                    await member.edit(nick=new_nick)
+                except (discord.Forbidden, discord.HTTPException) as e:
+                    print(f"Nickname update failed for {member.display_name}: {e}")
     except Exception as e:
-        print(f"Error in update_nickname for {member.display_name}: {e}")
+        print(f"Error updating nickname for {member.display_name}: {e}")
 # ========================
 # YOUR ORIGINAL COMMANDS (EXACTLY AS YOU HAD THEM)
 # ========================
@@ -317,6 +321,19 @@ async def clearvouches_all(ctx):
             await update_nickname(member)
     
     await ctx.send("♻️ Cleared ALL vouches!")
+
+@bot.command()
+@commands.check(is_admin)
+async def fixnicks(ctx):
+    """[ADMIN] Force-clean all nicknames with vouch tags"""
+    count = 0
+    for member in ctx.guild.members:
+        if is_tracking_enabled(member.id):
+            await update_nickname(member)
+            count += 1
+            await asyncio.sleep(0.5)  # Rate limiting
+    
+    await ctx.send(f"♻️ Force-updated {count} nicknames!")
 
 @bot.command()
 @commands.check(is_admin)
