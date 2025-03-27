@@ -862,12 +862,76 @@ async def on_ready():
 
 @bot.event
 async def on_command_error(ctx, error):
+    # Command Not Found - Smart Suggestions
     if isinstance(error, commands.CommandNotFound):
-        if ctx.invoked_with == "myroles":
-            await ctx.send("❌ `!myroles` command doesn't exist. Did you mean `!myvouches`?")
+        # Get available commands user can run
+        available_commands = []
+        for cmd in bot.commands:
+            try:
+                if await cmd.can_run(ctx):
+                    available_commands.append(cmd.name)
+            except:
+                continue
+        
+        # Find similar commands
+        invoked = ctx.invoked_with.lower()
+        suggestions = []
+        
+        # Check admin commands first if user is admin
+        if is_admin(ctx):
+            admin_commands = [cmd.name for cmd in bot.commands if cmd.checks]
+            suggestions.extend(
+                cmd for cmd in admin_commands 
+                if cmd.startswith(invoked[:3])  # Match first 3 letters
+            )
+        
+        # Check regular commands
+        regular_commands = [cmd.name for cmd in bot.commands if not cmd.checks]
+        suggestions.extend(
+            cmd for cmd in regular_commands
+            if cmd.startswith(invoked[:3])
+        )
+        
+        # Remove duplicates and the failed command itself
+        suggestions = list(set(suggestions) - {invoked})
+        
+        # Build response
+        if suggestions:
+            response = f"❌ Command `!{invoked}` not found. Did you mean:\n"
+            response += "\n".join(f"• `!{cmd}`" for cmd in suggestions[:3])  # Max 3 suggestions
+        else:
+            response = f"❌ Command `!{invoked}` not found. Use `!help` for available commands."
+        
+        await ctx.send(response)
         return
-    # Let other errors be handled normally
-    raise error
+    
+    # Special case for !myroles typo (keep your original behavior)
+    if ctx.invoked_with == "myroles":
+        await ctx.send("❌ Command not found. Did you mean `!myvouches`?")
+        return
+    
+    # Missing Permissions
+    if isinstance(error, commands.MissingPermissions):
+        await ctx.send("❌ You don't have permission to use this command.")
+        return
+    
+    # Bad Arguments (e.g., invalid number)
+    if isinstance(error, commands.BadArgument):
+        await ctx.send(f"❌ Invalid argument: {str(error)}")
+        return
+    
+    # Log unexpected errors to admin channel
+    error_channel = bot.get_channel(ADMIN_ALERTS_CHANNEL_ID)  # Make sure this exists!
+    if error_channel:
+        await error_channel.send(
+            f"⚠️ **Error in `{ctx.command or 'N/A'}`**\n"
+            f"• User: {ctx.author.mention}\n"
+            f"• Error: ```{str(error)[:1000]}```\n"
+            f"[Jump to Message]({ctx.message.jump_url})"
+        )
+    
+    # Print to console for debugging
+    print(f"[ERROR] {type(error)}: {error}")
 
 @bot.event
 async def on_raw_reaction_add(payload):
