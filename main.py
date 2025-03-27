@@ -110,16 +110,16 @@ def is_admin(ctx):
     return any(role.name in admin_roles for role in ctx.author.roles)
 
 def clean_nickname(nick):
-    """Completely remove all vouch-related tags from a nickname"""
+    """Remove ALL vouch-related tags from a nickname"""
     if not nick:
         return nick
     
-    # Remove ALL tag patterns including [XV], [X V], [unvouchable], etc.
+    # Remove ALL tag patterns including any brackets and their contents
     import re
-    clean = re.sub(r'(\s*\[[^\]]*\])+$', '', str(nick)).strip()
+    clean = re.sub(r'(\[.*?\])', '', str(nick)).strip()
     
-    # Remove any remaining orphaned brackets
-    clean = clean.replace("[", "").replace("]", "").strip()
+    # Remove any remaining special brackets and whitespace
+    clean = clean.replace("［", "").replace("］", "").strip()
     
     return clean
 
@@ -140,38 +140,41 @@ def has_vouched(voucher_id, vouched_id):
     return row is not None
 
 async def update_nickname(member):
+    """Force a complete nickname rebuild from scratch"""
     try:
         if not is_tracking_enabled(member.id):
             return
 
+        # Get current state
         vouches = get_vouches(member.id)
         current_nick = member.display_name
+        
+        # Completely clean the nickname (remove ALL tags)
         base_name = clean_nickname(current_nick)
-
-        # Build new tags
+        
+        # Build new tags from scratch
         new_tags = []
         if vouches > 0:
             new_tags.append(f"{vouches}V")
         if is_unvouchable(member.id):
             new_tags.append("unvouchable")
-
+        
         # Construct new nickname
         new_nick = base_name
         if new_tags:
             new_nick = f"{base_name} [{', '.join(new_tags)}]"
             new_nick = new_nick.replace("[", "［").replace("]", "］")
-
-        # Ensure nickname length is valid
+        
+        # Ensure valid length
         new_nick = new_nick[:32]
-
-        # Only update if different
-        if new_nick != current_nick:
-            try:
-                await member.edit(nick=new_nick)
-            except (discord.Forbidden, discord.HTTPException):
-                print(f"Couldn't update nickname for {member.display_name}")
+        
+        # Always update to ensure consistency
+        try:
+            await member.edit(nick=new_nick)
+        except (discord.Forbidden, discord.HTTPException):
+            print(f"Failed to update {member.display_name}'s nickname")
     except Exception as e:
-        print(f"Error updating nickname: {e}")
+        print(f"Critical error updating {member.display_name}: {str(e)}"
 # ========================
 # YOUR ORIGINAL COMMANDS (EXACTLY AS YOU HAD THEM)
 # ========================
@@ -337,6 +340,23 @@ async def fixnicks(ctx):
 
 @bot.command()
 @commands.check(is_admin)
+async def nuclear_reset(ctx, member: discord.Member):
+    """[ADMIN] COMPLETELY reset a user's nickname and vouch data"""
+    # Reset database
+    db_execute("DELETE FROM vouches WHERE user_id = ?", (member.id,))
+    db_execute("DELETE FROM vouch_records WHERE vouched_id = ?", (member.id,))
+    
+    # Remove all nickname tags
+    base_name = clean_nickname(member.display_name)
+    try:
+        await member.edit(nick=base_name)
+    except discord.HTTPException:
+        pass
+    
+    await ctx.send(f"☢️ Completely reset {member.mention}'s vouch data and nickname!")
+
+@bot.command()
+@commands.check(is_admin)
 async def resetnick(ctx, member: discord.Member):
     """[ADMIN] Completely reset a user's nickname"""
     base_name = clean_nickname(member.display_name)
@@ -349,26 +369,25 @@ async def resetnick(ctx, member: discord.Member):
 @bot.command()
 @commands.check(is_admin)
 async def setvouches(ctx, member: discord.Member, count: int):
-    """[ADMIN] Set exact vouch count"""
+    """[ADMIN] Set exact vouch count (with guaranteed clean update)"""
     if count < 0:
         return await ctx.send("❌ Vouch count cannot be negative!")
 
-    # First completely reset the nickname before setting new vouches
-    current_nick = member.display_name
-    base_name = clean_nickname(current_nick)
+    # First completely reset the nickname
     try:
-        await member.edit(nick=base_name)  # Remove all tags first
+        base_name = clean_nickname(member.display_name)
+        await member.edit(nick=base_name)
     except discord.HTTPException:
-        pass  # Skip if we can't edit the nickname
+        pass  # Continue even if we can't reset the nickname
 
-    # Update database with new count
+    # Update database
     if not db_execute("""
     INSERT INTO vouches VALUES (?, ?, 1) 
     ON CONFLICT(user_id) DO UPDATE SET vouch_count = ?
     """, (member.id, count, count)):
         return await ctx.send("❌ Database error!")
 
-    # Force a fresh nickname update
+    # Force a fresh nickname rebuild
     await update_nickname(member)
     await ctx.send(f"✅ Set {member.mention}'s vouches to {count}!")
 
