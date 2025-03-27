@@ -133,6 +133,7 @@ async def update_nickname(member):
         vouches = get_vouches(member.id)
         current_nick = member.display_name
         
+        # Remove any existing vouch tags from the nickname
         if "[" in current_nick and "]" in current_nick:
             base_name = current_nick.rsplit("[", 1)[0].strip()
         else:
@@ -144,34 +145,21 @@ async def update_nickname(member):
         if is_unvouchable(member.id):
             tags.append("unvouchable")
         
+        # If there are new tags, update the nickname with them
         if tags:
             new_nick = f"{base_name} [{', '.join(tags)}]".replace("[", "［").replace("]", "］")
         else:
+            # If there are no tags (e.g., vouch count is 0), remove the tag entirely
             new_nick = base_name
         
+        # If the new nickname is different from the current one, update it
         if new_nick != current_nick:
             try:
-                await member.edit(nick=new_nick[:32])
+                await member.edit(nick=new_nick[:32])  # Max nickname length is 32
             except (discord.Forbidden, discord.HTTPException):
                 pass
     except Exception as e:
         print(f"Nick update error: {e}")
-
-# Event handlers
-@bot.event
-async def on_ready():
-    print(f"Logged in as {bot.user}")
-
-@bot.event
-async def on_command_error(ctx, error):
-    if isinstance(error, commands.CommandNotFound):
-        await ctx.send("❌ Unknown command. Use `!help` for available commands.")
-    elif isinstance(error, commands.MissingRequiredArgument):
-        await ctx.send(f"❌ Missing argument. Usage: `!{ctx.command.name} {ctx.command.signature}`")
-    else:
-        await ctx.send("❌ An error occurred. Please try again.")
-        print(f"Command error: {error}")
-
 # ========================
 # YOUR ORIGINAL COMMANDS (EXACTLY AS YOU HAD THEM)
 # ========================
@@ -317,6 +305,18 @@ async def setvouches(ctx, member: discord.Member, count: int):
     if count < 0:
         return await ctx.send("❌ Vouch count cannot be negative!")
     
+    # Update the vouch count in the database
+    if not db_execute("""
+    INSERT INTO vouches VALUES (?, ?, 1) 
+    ON CONFLICT(user_id) DO UPDATE SET vouch_count = ?
+    """, (member.id, count, count)):
+        return await ctx.send("❌ Database error!")
+    
+    # After updating the database, update the nickname accordingly
+    await update_nickname(member)
+    
+    # Send a confirmation message
+    await ctx.send(f"✅ Set {member.mention}'s vouches to {count}!")
     if not db_execute("""
     INSERT INTO vouches VALUES (?, ?, 1) 
     ON CONFLICT(user_id) DO UPDATE SET vouch_count = ?
