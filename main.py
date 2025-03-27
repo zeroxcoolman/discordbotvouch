@@ -436,9 +436,8 @@ async def verify(ctx, member: discord.Member = None):
     # Get verification data
     legit_vouches = db_fetchall("SELECT COUNT(*) as count FROM vouch_records WHERE vouched_id = ?", (target.id,))
     legit_count = legit_vouches[0]['count'] if legit_vouches else 0
-    admin_vouches = vouch_count - legit_count
     
-    # Verification logic with new admin classifications
+    # Verification logic
     fake_tags = (displayed_vouches > vouch_count)
     nickname_valid = (displayed_vouches == vouch_count)
     
@@ -447,14 +446,10 @@ async def verify(ctx, member: discord.Member = None):
     elif not nickname_valid:
         verification = "⚠️ TAG DISCREPANCY"
     elif legit_count == vouch_count:
-        verification = "✅ FULLY VERIFIED (ALL COMMUNITY VOUCHES)"
-    elif admin_vouches > 0:
-        if admin_vouches == vouch_count:  # All admin
-            verification = "🛡️ ADMIN (FULLY) SET VOUCHES"
-        elif admin_vouches > legit_count:  # Mostly admin
-            verification = f"🛡️ ADMIN (MOSTLY) SET VOUCHES ({admin_vouches}/{vouch_count})"
-        else:  # Some admin
-            verification = f"🛡️ ADMIN (SOME) SET VOUCHES ({admin_vouches}/{vouch_count})"
+        verification = "✅ FULLY VERIFIED"
+    elif legit_count < vouch_count:
+        admin_vouches = vouch_count - legit_count
+        verification = f"⚠️ {admin_vouches} ADMIN VOUCHES"
     else:
         verification = "❌ DATABASE INCONSISTENCY"
     
@@ -464,7 +459,6 @@ async def verify(ctx, member: discord.Member = None):
         f"• Displayed: {displayed_vouches}V\n"
         f"• Database: {vouch_count} vouches\n"
         f"• Community vouches: {legit_count}\n"
-        f"• Admin vouches: {admin_vouches}\n"
         f"• Status: {verification}"
     )
     
