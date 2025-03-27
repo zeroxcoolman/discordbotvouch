@@ -851,9 +851,26 @@ async def backup_db(ctx):
     """[ADMIN] Create a database backup"""
     try:
         with open('vouches.db', 'rb') as f:
-            await ctx.send("Database backup:", file=discord.File(f, 'vouches_backup.db'))
+            # Send to both the original channel and admin alerts channel
+            await ctx.send("Database backup created successfully!")
+            alert_channel = bot.get_channel(ADMIN_ALERTS_CHANNEL_ID)
+            if alert_channel:
+                await alert_channel.send(
+                    f"Database backup requested by {ctx.author.mention} (ID: {ctx.author.id}):",
+                    file=discord.File(f, 'vouches_backup.db')
+                )
+            else:
+                await ctx.send("⚠️ Could not find admin alerts channel, but backup was created.")
     except Exception as e:
-        await ctx.send(f"❌ Backup failed: {str(e)}")
+        error_msg = f"❌ Backup failed: {str(e)}"
+        await ctx.send(error_msg)
+        # Try to send error to admin channel too
+        try:
+            alert_channel = bot.get_channel(ADMIN_ALERTS_CHANNEL_ID)
+            if alert_channel:
+                await alert_channel.send(error_msg)
+        except:
+            pass
 
 @bot.event
 async def on_ready():
