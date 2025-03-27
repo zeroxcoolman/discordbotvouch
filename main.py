@@ -663,7 +663,7 @@ async def verify(ctx, member: discord.Member = None):
             f"(Community: {community_vouches} | Admin: {admin_vouches} | Adjustments: {admin_adjustments})"
         )
     elif admin_adjustments > vouch_count * 0.5:  # More than 50% admin-set
-        response += "⚠️ **SUSPICIOUS ADMIN VOUCHES**"
+        response += "⚠️ **ADMIN-SET VOUCHES**"
         await notify_admins(
             ctx.guild,
             target,
