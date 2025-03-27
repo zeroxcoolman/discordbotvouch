@@ -174,7 +174,7 @@ async def update_nickname(member):
         except (discord.Forbidden, discord.HTTPException):
             print(f"Failed to update {member.display_name}'s nickname")
     except Exception as e:
-        print(f"Critical error updating {member.display_name}: {str(e)}"
+        print(f"Critical error updating {member.display_name}: {str(e)}")
 # ========================
 # YOUR ORIGINAL COMMANDS (EXACTLY AS YOU HAD THEM)
 # ========================
