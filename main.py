@@ -109,6 +109,19 @@ def is_admin(ctx):
     admin_roles = ["Administrator™🌟", "𝓞𝔀𝓷𝓮𝓻 👑", "𓂀 𝒞𝑜-𝒪𝓌𝓃𝑒𝓇 𓂀✅"]
     return any(role.name in admin_roles for role in ctx.author.roles)
 
+def clean_nickname(nick):
+    """Remove all vouch-related tags from a nickname"""
+    if not nick:
+        return ""
+    
+    # Remove everything after the first [
+    clean = nick.split('[')[0].strip()
+    
+    # Remove any remaining brackets just in case
+    clean = clean.replace('[', '').replace(']', '').strip()
+    
+    return clean
+
 def get_vouches(user_id):
     row = db_fetchone("SELECT vouch_count FROM vouches WHERE user_id = ?", (user_id,))
     return row[0] if row else 0
@@ -133,28 +146,40 @@ async def update_nickname(member):
         vouches = get_vouches(member.id)
         current_nick = member.display_name
 
-        # Remove all existing vouch tags
-        base_name = current_nick.split('[')[0].strip() if '[' in current_nick else current_nick
+        # Remove ALL existing vouch-related tags (both [XV] and [unvouchable])
+        base_name = current_nick
+        if '[' in base_name and ']' in base_name:
+            # Remove everything after the last '[' including the bracket
+            base_name = base_name.split('[')[0].strip()
+        
+        # Remove any remaining tags that might be stuck
+        base_name = base_name.replace('[', '').replace(']', '').strip()
 
+        # Prepare new tags
         tags = []
         if vouches > 0:
             tags.append(f"{vouches}V")
         if is_unvouchable(member.id):
             tags.append("unvouchable")
 
-        # Add tags only if there's any
+        # Construct new nickname
         if tags:
-            new_nick = f"{base_name} [{', '.join(tags)}]".replace("[", "［").replace("]", "］")
+            new_nick = f"{base_name} [{', '.join(tags)}]"
+            # Ensure proper formatting (replace brackets with full-width if needed)
+            new_nick = new_nick.replace("[", "［").replace("]", "］")
         else:
-            new_nick = base_name  # If no vouches, just the base name
+            new_nick = base_name  # No tags needed
+
+        # Ensure nickname length is within limits
+        new_nick = new_nick[:32]
 
         if new_nick != current_nick:
             try:
-                await member.edit(nick=new_nick[:32])  # Limit nicknames to 32 characters
-            except (discord.Forbidden, discord.HTTPException):
-                pass
+                await member.edit(nick=new_nick)
+            except (discord.Forbidden, discord.HTTPException) as e:
+                print(f"Couldn't update {member.display_name}'s nickname: {e}")
     except Exception as e:
-        print(f"Nick update error: {e}")
+        print(f"Error in update_nickname for {member.display_name}: {e}")
 # ========================
 # YOUR ORIGINAL COMMANDS (EXACTLY AS YOU HAD THEM)
 # ========================
@@ -306,7 +331,7 @@ async def setvouches(ctx, member: discord.Member, count: int):
     """, (member.id, count, count)):
         return await ctx.send("❌ Database error!")
 
-    # Ensure the nickname gets updated after setting the vouch count
+    # Force a complete nickname refresh
     await update_nickname(member)
     await ctx.send(f"✅ Set {member.mention}'s vouches to {count}!")
 
