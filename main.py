@@ -979,7 +979,7 @@ async def on_ready():
         missing_channel = channel is None
 
         # Check admin roles
-        missing_roles = [r for r in admin_roles if discord.utils.get(guild.roles, name=r) is None]
+        missing_roles = [rid for rid in admin_roles if guild.get_role(rid) is None]
 
         # DM owner
         if missing_channel or missing_roles:
