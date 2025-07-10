@@ -41,14 +41,14 @@ ADMIN_ALERTS_CHANNEL_ID = 1354897882271977744
 # Admin channel configuration
 
 def get_staff_channel(guild):
-    STAFF_CHANNEL_NAME, _ = get_config(guild.id)
-    return discord.utils.get(guild.text_channels, name=STAFF_CHANNEL_NAME)
+    staff_channel_id, _ = get_config(guild.id)
+    return guild.get_channel(staff_channel_id)
 
 def get_config(guild_id):
-    row = db_fetchone("SELECT staff_channel_name, admin_roles FROM config WHERE guild_id = ?", (guild_id,))
+    row = db_fetchone("SELECT staff_channel_id, admin_roles_id FROM config WHERE guild_id = ?", (guild_id,))
     if row:
-        return row['staff_channel_name'], json.loads(row['admin_roles'])
-    return "🎀︱staff-only", ["Administrator™🌟", "𝓞𝔀𝓷𝓮𝓻 👑", "𓂀 𝒞𝑜-𝒪𝓌𝑒𝓇 𓂀✅"]
+        return int(row['staff_channel_id']), json.loads(row['admin_roles_id'])
+    return 0, []
 
 
 # Database setup with error handling
@@ -108,8 +108,8 @@ def init_config():
         conn.execute("""
         CREATE TABLE IF NOT EXISTS config (
             guild_id INTEGER PRIMARY KEY,
-            staff_channel_name TEXT DEFAULT '🎀︱staff-only',
-            admin_roles TEXT DEFAULT '["Administrator™🌟", "𝓞𝔀𝓷𝓮𝓻 👑", "𓂀 𝒞𝑜-𝒪𝓌𝑒𝓇 𓂀✅"]'
+            staff_channel_id TEXT DEFAULT '',
+            admin_roles_id TEXT DEFAULT ''
         )
         """)
 
@@ -245,19 +245,31 @@ async def update_nickname(member):
 @bot.command()
 @commands.is_owner()
 async def setconfig(ctx, setting: str, *, value: str):
-    """[OWNER] Set staff_channel_name or admin_roles (comma-separated)"""
+    """[OWNER] Set staff_channel_id or admin_roles_id (comma-separated IDs)"""
     setting = setting.lower()
-    if setting not in ("staff_channel_name", "admin_roles"):
-        return await ctx.send("❌ Invalid setting. Use `staff_channel_name` or `admin_roles`.")
-    
-    if setting == "admin_roles":
+    if setting not in ("staff_channel_id", "admin_roles_id"):
+        return await ctx.send("❌ Invalid setting. Use `staff_channel_id` or `admin_roles_id`.")
+
+    if setting == "staff_channel_id":
         try:
-            # Convert comma-separated roles to JSON list
-            roles = [r.strip() for r in value.split(",") if r.strip()]
-            value = json.dumps(roles)
-        except Exception as e:
-            return await ctx.send(f"❌ Invalid role format: {e}")
+            channel_id = int(value.strip())
+            channel = ctx.guild.get_channel(channel_id)
+            if channel is None:
+                return await ctx.send("❌ That channel ID doesn't exist in this server!")
+            value = str(channel.id)
+        except ValueError:
+            return await ctx.send("❌ Invalid channel ID format. Use a numeric ID.")
     
+    elif setting == "admin_roles_id":
+        try:
+            role_ids = [int(r.strip()) for r in value.split(",") if r.strip()]
+            missing = [rid for rid in role_ids if ctx.guild.get_role(rid) is None]
+            if missing:
+                return await ctx.send(f"❌ These role IDs don't exist: {', '.join(map(str, missing))}")
+            value = json.dumps(role_ids)
+        except ValueError:
+            return await ctx.send("❌ Invalid role ID format. Use numeric IDs separated by commas.")
+
     if not db_execute(f"""
         INSERT INTO config (guild_id, {setting})
         VALUES (?, ?)
@@ -266,6 +278,7 @@ async def setconfig(ctx, setting: str, *, value: str):
         return await ctx.send("❌ Failed to update config.")
     
     await ctx.send(f"✅ `{setting}` updated.")
+
 
 
 @bot.command()
