@@ -142,8 +142,8 @@ def db_fetchall(query, params=()):
 
 # Core functions
 def is_admin(ctx):
-    _, admin_roles = get_config(ctx.guild.id)
-    return any(role.name in admin_roles for role in ctx.author.roles)
+    _, admin_roles_id = get_config(ctx.guild.id)
+    return any(role.id in admin_roles_id for role in ctx.author.roles)
 
 def clean_nickname(nick):
     """Remove ALL vouch tags while preserving special characters"""
@@ -847,11 +847,11 @@ async def verify(ctx, member: discord.Member = None):
 
 async def notify_admins(guild, member, reason):
     """Send alerts to admins via DM or staff channel"""
-    admin_roles = ["Administrator™🌟", "𝓞𝔀𝓷𝓮𝓻 👑", "𓂀 𝒞𝑜-𝒪𝓌𝓃𝑒𝓻 𓂀✅"]
-    recipients = list({m for role in guild.roles 
-                      if role.name in admin_roles 
-                      for m in role.members 
-                      if not m.bot})
+    _, admin_roles_id = get_config(guild.id)
+    recipients = list({m for role in guild.roles
+                        if role.id in admin_roles_id
+                        for m in role.members
+                        if not m.bot})
 
     # Get the staff channel
     _, admin_roles = get_config(guild.id)
@@ -1096,9 +1096,9 @@ async def on_raw_reaction_add(payload):
         
         # Check if reaction is from admin
         reactor = guild.get_member(payload.user_id)
-        if not reactor or not any(r.name in admin_roles for r in reactor.roles):
+        if not reactor or not any(r.id in admin_roles for r in reactor.roles):
             return
-        
+
         # Handle the action
         if str(payload.emoji) == "✅":
             # Reset vouches
