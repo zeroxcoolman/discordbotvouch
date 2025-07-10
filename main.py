@@ -1057,6 +1057,7 @@ async def on_command_error(ctx, error):
 
 @bot.event
 async def on_raw_reaction_add(payload):
+
     if not hasattr(bot, 'discrepancy_notifications'):
         return
     
@@ -1072,6 +1073,8 @@ async def on_raw_reaction_add(payload):
         guild = bot.get_guild(payload.guild_id)
         if not guild:
             return
+
+        _, admin_roles = get_config(guild.id)
         
         # Get the member in question
         member = guild.get_member(data['member_id'])
