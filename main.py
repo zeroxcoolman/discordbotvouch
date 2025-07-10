@@ -9,6 +9,7 @@ import time
 import asyncio
 from flask import Flask
 from threading import Thread
+import json
 
 app = Flask(__name__)
 
@@ -38,7 +39,17 @@ bot.vouch_spam = {}  # Anti-spam tracking
 bot.discrepancy_notifications = {}
 ADMIN_ALERTS_CHANNEL_ID = 1354897882271977744
 # Admin channel configuration
-STAFF_CHANNEL_NAME = "🎀︱staff-only"  # Change this to your desired channel name
+
+def get_staff_channel(guild):
+    STAFF_CHANNEL_NAME, _ = get_config(guild.id)
+    return discord.utils.get(guild.text_channels, name=STAFF_CHANNEL_NAME)
+
+def get_config(guild_id):
+    row = db_fetchone("SELECT staff_channel_name, admin_roles FROM config WHERE guild_id = ?", (guild_id,))
+    if row:
+        return row['staff_channel_name'], json.loads(row['admin_roles'])
+    return "🎀︱staff-only", ["Administrator™🌟", "𝓞𝔀𝓷𝓮𝓻 👑", "𓂀 𝒞𝑜-𝒪𝓌𝑒𝓇 𓂀✅"]
+
 
 # Database setup with error handling
 def get_db():
@@ -92,6 +103,19 @@ def init_db():
 
 init_db()
 
+def init_config():
+    with get_db() as conn:
+        conn.execute("""
+        CREATE TABLE IF NOT EXISTS config (
+            guild_id INTEGER PRIMARY KEY,
+            staff_channel_name TEXT DEFAULT '🎀︱staff-only',
+            admin_roles TEXT DEFAULT '["Administrator™🌟", "𝓞𝔀𝓷𝓮𝓻 👑", "𓂀 𝒞𝑜-𝒪𝓌𝑒𝓇 𓂀✅"]'
+        )
+        """)
+
+
+init_config()
+
 # Database operations with error handling
 def db_execute(query, params=()):
     try:
@@ -118,7 +142,7 @@ def db_fetchall(query, params=()):
 
 # Core functions
 def is_admin(ctx):
-    admin_roles = ["Administrator™🌟", "𝓞𝔀𝓷𝓮𝓻 👑", "𓂀 𝒞𝑜-𝒪𝓌𝓃𝑒𝓇 𓂀✅"]
+    _, admin_roles = get_config(ctx.guild.id)
     return any(role.name in admin_roles for role in ctx.author.roles)
 
 def clean_nickname(nick):
@@ -215,9 +239,34 @@ async def update_nickname(member):
             
     except Exception as e:
         print(f"Nickname update failed for {member.display_name}: {str(e)}")
-# ========================
-# YOUR ORIGINAL COMMANDS (EXACTLY AS YOU HAD THEM)
-# ========================
+
+# COMMANDS
+
+@bot.command()
+@commands.is_owner()
+async def setconfig(ctx, setting: str, *, value: str):
+    """[OWNER] Set staff_channel_name or admin_roles (comma-separated)"""
+    setting = setting.lower()
+    if setting not in ("staff_channel_name", "admin_roles"):
+        return await ctx.send("❌ Invalid setting. Use `staff_channel_name` or `admin_roles`.")
+    
+    if setting == "admin_roles":
+        try:
+            # Convert comma-separated roles to JSON list
+            roles = [r.strip() for r in value.split(",") if r.strip()]
+            value = json.dumps(roles)
+        except Exception as e:
+            return await ctx.send(f"❌ Invalid role format: {e}")
+    
+    if not db_execute(f"""
+        INSERT INTO config (guild_id, {setting})
+        VALUES (?, ?)
+        ON CONFLICT(guild_id) DO UPDATE SET {setting} = ?
+    """, (ctx.guild.id, value, value)):
+        return await ctx.send("❌ Failed to update config.")
+    
+    await ctx.send(f"✅ `{setting}` updated.")
+
 
 @bot.command()
 @commands.check(is_admin)
@@ -792,7 +841,9 @@ async def notify_admins(guild, member, reason):
                       if not m.bot})
 
     # Get the staff channel
-    staff_channel = discord.utils.get(guild.text_channels, name=STAFF_CHANNEL_NAME)
+    _, admin_roles = get_config(guild.id)
+    staff_channel = get_staff_channel(guild)
+
     
     embed = discord.Embed(
         title="🚨 Vouch Verification Alert",
@@ -905,8 +956,31 @@ async def backup_db(ctx):
 @bot.event
 async def on_ready():
     print(f'Logged in as {bot.user.name}')
-    # Add this to periodically clean old notifications:
     bot.loop.create_task(clean_old_notifications())
+
+    for guild in bot.guilds:
+        staff_channel_name, admin_roles = get_config(guild.id)
+
+        # Check staff channel
+        channel = discord.utils.get(guild.text_channels, name=staff_channel_name)
+        missing_channel = channel is None
+
+        # Check admin roles
+        missing_roles = [r for r in admin_roles if discord.utils.get(guild.roles, name=r) is None]
+
+        # DM owner
+        if missing_channel or missing_roles:
+            try:
+                owner = guild.owner
+                msg = "**⚠️ VouchBot Configuration Warning**\n"
+                if missing_channel:
+                    msg += f"• Staff channel `{staff_channel_name}` not found.\n"
+                if missing_roles:
+                    msg += f"• Missing admin roles: `{', '.join(missing_roles)}`\n"
+                msg += "Use `!setconfig` to update them."
+                await owner.send(msg)
+            except Exception as e:
+                print(f"Failed to DM owner in {guild.name}: {e}")
 
 @bot.event
 async def on_command_error(ctx, error):
