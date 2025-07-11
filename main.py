@@ -10,6 +10,7 @@ import time
 import asyncio
 from flask import Flask
 from threading import Thread
+from io import StringIO
 import json
 
 app = Flask(__name__)
@@ -282,12 +283,26 @@ class VouchModal(ui.Modal, title="Submit a Vouch"):
             ctx.author = interaction.user
             ctx.guild = guild
             ctx.channel = interaction.channel
-            await self.bot.get_command('vouch').callback(ctx, target, reason=self.reason.value or "No reason provided")
-
-            await interaction.response.send_message(f"✅ Vouch submitted for {target.mention}.", ephemeral=True)
-        except Exception as e:
-            await interaction.response.send_message("❌ Failed to process vouch.", ephemeral=True)
-            print(f"VouchModal error: {e}")
+            
+            old_send = ctx.send
+            output_buffer = StringIO()
+            
+            async def capture_send(content=None, **kwargs):
+                output_buffer.write(content or "")
+            ctx.send = capture_send
+            
+            try:
+                await self.bot.get_command('vouch').callback(ctx, target, reason=self.reason.value or "No reason provided")
+                response_text = output_buffer.getvalue()
+                if "✅" in response_text:
+                    await interaction.response.send_message(f"✅ Vouch submitted for {target.mention}.", ephemeral=True)
+                else:
+                    await interaction.response.send_message(response_text, ephemeral=True)
+            except Exception as e:
+                await interaction.response.send_message("❌ Failed to process vouch.", ephemeral=True)
+                print(f"VouchModal error: {e}")
+            finally:
+                ctx.send = old_send
 
 class VouchButtonView(discord.ui.View):
     def __init__(self, bot):
