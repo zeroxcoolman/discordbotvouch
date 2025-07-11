@@ -269,7 +269,7 @@ class VouchModal(ui.Modal, title="Submit a Vouch"):
                 else:
                     # Try by name
                     for member in guild.members:
-                        if content.lower() or member.name.lower() == content.lower():
+                        if member.name.lower() == content.lower():  # exact username match only
                             target = member
                             break
 
