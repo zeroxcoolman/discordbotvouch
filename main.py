@@ -434,18 +434,24 @@ async def vouch(ctx, member: discord.Member, *, reason: str = "No reason provide
             return await ctx.send("❌ Database error!")
         
         if not admin:
-            if not db_execute("INSERT INTO vouch_records VALUES (?, ?)", (ctx.author.id, member.id)):
+            if not db_execute(
+                "INSERT INTO vouch_records (voucher_id, vouched_id, timestamp) VALUES (?, ?, ?)",
+                (ctx.author.id, member.id, int(time.time()))
+            ):
                 return await ctx.send("❌ Database error!")
+        
             db_execute("""
-            INSERT INTO vouch_reasons VALUES (?, ?, ?, ?)
+            INSERT INTO vouch_reasons (voucher_id, vouched_id, reason, timestamp)
+            VALUES (?, ?, ?, ?)
             ON CONFLICT(voucher_id, vouched_id) DO UPDATE SET reason = ?, timestamp = ?
             """, (ctx.author.id, member.id, reason, int(time.time()), reason, int(time.time())))
-            
-            # Update cooldown
+        
             db_execute("""
-            INSERT INTO vouch_cooldowns VALUES (?, ?)
+            INSERT INTO vouch_cooldowns (user_id, last_vouch_time)
+            VALUES (?, ?)
             ON CONFLICT(user_id) DO UPDATE SET last_vouch_time = ?
             """, (ctx.author.id, int(time.time()), int(time.time())))
+
         
         await update_nickname(member)
         await ctx.send(f"✅ {member.mention} now has {new_count} vouches! Reason: {reason[:50]}")
