@@ -294,7 +294,7 @@ class VouchButtonView(discord.ui.View):
         super().__init__(timeout=None)
         self.bot = bot
 
-    @discord.ui.button(label="Submit A Vouch", style=discord.ButtonStyle.primary, emoji="🎟️")
+    @discord.ui.button(label="Submit A Vouch", style=discord.ButtonStyle.primary, emoji="🎟️",custom_id="submit_vouch_button")
     async def submit_vouch_button(self, interaction: discord.Interaction, button: discord.ui.Button):
         await interaction.response.send_modal(VouchModal(self.bot, interaction))
 
