@@ -2,6 +2,7 @@ import re
 import datetime
 import traceback
 import discord
+from discord import ui
 from discord.ext import commands
 import sqlite3
 import os
@@ -240,6 +241,63 @@ async def update_nickname(member):
     except Exception as e:
         print(f"Nickname update failed for {member.display_name}: {str(e)}")
 
+class VouchModal(ui.Modal, title="Submit a Vouch"):
+    person_name = ui.TextInput(label="Person Name", placeholder="Their Discord name or mention", required=True)
+    reason = ui.TextInput(label="Reason", placeholder="Optional", required=False, style=discord.TextStyle.paragraph)
+
+    def __init__(self, bot, interaction):
+        super().__init__()
+        self.bot = bot
+        self.interaction = interaction
+
+    async def on_submit(self, interaction: discord.Interaction):
+        try:
+            # Try to resolve the user by mention or name
+            guild = interaction.guild
+            target = None
+            content = self.person_name.value.strip()
+
+            # Try mention
+            if len(interaction.message.mentions) > 0:
+                target = interaction.message.mentions[0]
+            else:
+                # Try ID or name match
+                match = re.match(r'<@!?(\d+)>', content)
+                if match:
+                    target_id = int(match.group(1))
+                    target = guild.get_member(target_id)
+                else:
+                    # Try by name
+                    for member in guild.members:
+                        if member.display_name.lower() == content.lower() or member.name.lower() == content.lower():
+                            target = member
+                            break
+
+            if not target:
+                await interaction.response.send_message(f"❌ Could not find user `{content}` in this server.", ephemeral=True)
+                return
+
+            # Call the existing !vouch command
+            ctx = await self.bot.get_context(interaction.message)
+            ctx.author = interaction.user
+            ctx.guild = guild
+            ctx.channel = interaction.channel
+            await self.bot.get_command('vouch').callback(self.bot, ctx, target, reason=self.reason.value or "No reason provided")
+
+            await interaction.response.send_message(f"✅ Vouch submitted for {target.mention}.", ephemeral=True)
+        except Exception as e:
+            await interaction.response.send_message("❌ Failed to process vouch.", ephemeral=True)
+            print(f"VouchModal error: {e}")
+
+class VouchButtonView(discord.ui.View):
+    def __init__(self, bot):
+        super().__init__(timeout=None)
+        self.bot = bot
+
+    @discord.ui.button(label="Submit A Vouch", style=discord.ButtonStyle.primary, emoji="🎟️")
+    async def submit_vouch_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.send_modal(VouchModal(self.bot, interaction))
+
 # COMMANDS
 
 @bot.command()
@@ -279,6 +337,13 @@ async def setconfig(ctx, setting: str, *, value: str):
     
     await ctx.send(f"✅ `{setting}` updated.")
 
+@bot.command()
+@commands.check(is_admin)
+async def setupvouchticket(ctx):
+    """[ADMIN] Set up the Submit A Vouch button in this channel."""
+    view = VouchButtonView(bot)
+    await ctx.send("📝 Click below to submit a vouch!", view=view)
+    await ctx.send("✅ Vouch ticket system is ready.")
 
 
 @bot.command()
@@ -969,6 +1034,7 @@ async def backup_db(ctx):
 @bot.event
 async def on_ready():
     print(f'Logged in as {bot.user.name}')
+    bot.add_view(VouchButtonView(bot))
     bot.loop.create_task(clean_old_notifications())
 
     for guild in bot.guilds:
