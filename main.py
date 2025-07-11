@@ -269,7 +269,7 @@ class VouchModal(ui.Modal, title="Submit a Vouch"):
                 else:
                     # Try by name
                     for member in guild.members:
-                        if member.display_name.lower() == content.lower() or member.name.lower() == content.lower():
+                        if content.lower() or member.name.lower() == content.lower():
                             target = member
                             break
 
@@ -282,7 +282,7 @@ class VouchModal(ui.Modal, title="Submit a Vouch"):
             ctx.author = interaction.user
             ctx.guild = guild
             ctx.channel = interaction.channel
-            await self.bot.get_command('vouch').callback(self.bot, ctx, target, reason=self.reason.value or "No reason provided")
+            await self.bot.get_command('vouch').callback(ctx, target, reason=self.reason.value or "No reason provided")
 
             await interaction.response.send_message(f"✅ Vouch submitted for {target.mention}.", ephemeral=True)
         except Exception as e:
