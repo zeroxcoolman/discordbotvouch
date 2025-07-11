@@ -676,7 +676,7 @@ async def enablevouches_all(ctx):
     """[ADMIN] Enable tracking for all"""
     count = 0
     for member in ctx.guild.members:
-        if not is_admin(ctx) and not is_tracking_enabled(member.id):
+        if not is_tracking_enabled(member.id):
             if db_execute("""
             INSERT INTO vouches (user_id, tracking_enabled) VALUES (?, 1)
             ON CONFLICT(user_id) DO UPDATE SET tracking_enabled = 1
