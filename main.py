@@ -1096,9 +1096,12 @@ async def slash_myvouches(interaction: Interaction):
         await interaction.response.send_message("❌ Could not fetch your vouch stats.", ephemeral=True)
 
 @bot.tree.command(name="setconfig", description="[OWNER] Set a config value")
-@app_commands.checks.is_owner()
 @app_commands.describe(setting="Which setting to change", value="New value (channel ID or role IDs)")
 async def slash_setconfig(interaction: Interaction, setting: str, value: str):
+    if interaction.user.id != bot.owner_id:
+        await interaction.response.send_message("❌ Only the bot owner can use this command.", ephemeral=True)
+        return
+
     ctx = await bot.get_context(interaction)
     ctx.author = interaction.user
     try:
