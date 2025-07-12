@@ -251,7 +251,9 @@ class VouchModal(ui.Modal, title="Submit a Vouch"):
         self.bot = bot
         self.interaction = interaction
 
-    async def on_submit(self, interaction: discord.Interaction):
+        async def on_submit(self, interaction: discord.Interaction):
+        await interaction.response.defer(thinking=True, ephemeral=True)  # ⬅️ Key line to prevent timeout
+
         guild = interaction.guild
         target = None
         content = self.person_name.value.strip()
@@ -267,10 +269,7 @@ class VouchModal(ui.Modal, title="Submit a Vouch"):
                     break
 
         if not target:
-            try:
-                await interaction.response.send_message(f"❌ Could not find user `{content}`.", ephemeral=True)
-            except discord.NotFound:
-                await interaction.followup.send(f"❌ Could not find user `{content}`.", ephemeral=True)
+            await interaction.followup.send(f"❌ Could not find user `{content}` in this server.", ephemeral=True)
             return
 
         class FakeCtx:
@@ -287,19 +286,12 @@ class VouchModal(ui.Modal, title="Submit a Vouch"):
 
         try:
             await self.bot.get_command("vouch").callback(ctx, target, reason=self.reason.value or "No reason provided")
-            response = ctx.send_output.getvalue() or "✅ Vouch submitted."
-
-            try:
-                await interaction.response.send_message(response, ephemeral=True)
-            except discord.NotFound:
-                await interaction.followup.send(response, ephemeral=True)
-
+            response = ctx.send_output.getvalue() or f"✅ Vouch submitted for {target.mention}."
+            await interaction.followup.send(response, ephemeral=True)
         except Exception as e:
             print(f"[VouchModal error] {e}")
-            try:
-                await interaction.response.send_message("❌ Failed to process vouch.", ephemeral=True)
-            except discord.NotFound:
-                await interaction.followup.send("❌ Failed to process vouch.", ephemeral=True)
+            await interaction.followup.send("❌ Failed to process vouch.", ephemeral=True)
+
 
 class VouchButtonView(discord.ui.View):
     def __init__(self, bot):
