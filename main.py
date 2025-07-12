@@ -4,6 +4,8 @@ import traceback
 import discord
 from discord import ui
 from discord.ext import commands
+from discord import app_commands
+from discord import Interaction, Member
 import sqlite3
 import os
 import time
@@ -1039,9 +1041,89 @@ async def backup_db(ctx):
         except:
             pass
 
+@bot.tree.command(name="vouch", description="Vouch for a user")
+@app_commands.describe(
+    member="Who are you vouching for?",
+    reason="Why are you vouching them?"
+)
+async def slash_vouch(interaction: Interaction, member: Member, reason: str = "No reason provided"):
+    class FakeCtx:
+        def __init__(self, user, guild, channel):
+            self.author = user
+            self.guild = guild
+            self.channel = channel
+            self.send_output = StringIO()
+
+        async def send(self, content=None, **kwargs):
+            self.send_output.write(content or "")
+
+    ctx = FakeCtx(interaction.user, interaction.guild, interaction.channel)
+    try:
+        await bot.get_command("vouch").callback(ctx, member, reason=reason)
+        await interaction.response.send_message(ctx.send_output.getvalue() or "✅ Vouch submitted!", ephemeral=True)
+    except Exception as e:
+        print(f"[Slash Vouch Error] {e}")
+        await interaction.response.send_message("❌ Something went wrong.", ephemeral=True)
+
+@bot.tree.command(name="enablevouch", description="Enable vouch tracking for yourself")
+async def slash_enablevouch(interaction: Interaction):
+    ctx = await bot.get_context(interaction)
+    ctx.author = interaction.user
+    try:
+        await bot.get_command("enablevouch").callback(ctx)
+    except Exception as e:
+        print(f"[Slash EnableVouch Error] {e}")
+        await interaction.response.send_message("❌ Could not enable vouch tracking.", ephemeral=True)
+
+@bot.tree.command(name="disablevouch", description="Disable vouch tracking for yourself")
+async def slash_disablevouch(interaction: Interaction):
+    ctx = await bot.get_context(interaction)
+    ctx.author = interaction.user
+    try:
+        await bot.get_command("disablevouch").callback(ctx)
+    except Exception as e:
+        print(f"[Slash DisableVouch Error] {e}")
+        await interaction.response.send_message("❌ Could not disable vouch tracking.", ephemeral=True)
+
+@bot.tree.command(name="myvouches", description="Check your vouch count and cooldown status")
+async def slash_myvouches(interaction: Interaction):
+    ctx = await bot.get_context(interaction)
+    ctx.author = interaction.user
+    try:
+        await bot.get_command("myvouches").callback(ctx)
+    except Exception as e:
+        print(f"[Slash MyVouches Error] {e}")
+        await interaction.response.send_message("❌ Could not fetch your vouch stats.", ephemeral=True)
+
+@bot.tree.command(name="setconfig", description="[OWNER] Set a config value")
+@app_commands.checks.is_owner()
+@app_commands.describe(setting="Which setting to change", value="New value (channel ID or role IDs)")
+async def slash_setconfig(interaction: Interaction, setting: str, value: str):
+    ctx = await bot.get_context(interaction)
+    ctx.author = interaction.user
+    try:
+        await bot.get_command("setconfig").callback(ctx, setting=setting, value=value)
+    except Exception as e:
+        print(f"[Slash SetConfig Error] {e}")
+        await interaction.response.send_message("❌ Could not update config.", ephemeral=True)
+
+@bot.tree.command(name="setupvouchticket", description="[ADMIN] Post the vouch button")
+async def slash_setupvouchticket(interaction: Interaction):
+    ctx = await bot.get_context(interaction)
+    ctx.author = interaction.user
+    try:
+        await bot.get_command("setupvouchticket").callback(ctx)
+    except Exception as e:
+        print(f"[Slash SetupVouchTicket Error] {e}")
+        await interaction.response.send_message("❌ Could not set up vouch ticket.", ephemeral=True)
+
 @bot.event
 async def on_ready():
     print(f'Logged in as {bot.user.name}')
+    await bot.wait_until_ready()
+    await bot.tree.sync()
+    print(f"Slash commands synced as {bot.user.name}")
+    
     bot.add_view(VouchButtonView(bot))
     bot.loop.create_task(clean_old_notifications())
 
