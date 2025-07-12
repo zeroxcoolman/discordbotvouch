@@ -254,12 +254,12 @@ class VouchModal(ui.Modal, title="Submit a Vouch"):
         self.interaction = interaction
 
     async def on_submit(self, interaction: discord.Interaction):
-        await interaction.response.defer(thinking=True, ephemeral=True)  # ⬅️ Key line to prevent timeout
-
+        await interaction.response.defer(thinking=True, ephemeral=True)
+    
         guild = interaction.guild
         target = None
         content = self.person_name.value.strip()
-
+    
         match = re.match(r'<@!?(\d+)>', content)
         if match:
             target_id = int(match.group(1))
@@ -269,38 +269,45 @@ class VouchModal(ui.Modal, title="Submit a Vouch"):
                 if member.name.lower() == content.lower():
                     target = member
                     break
-
+    
         if not target:
-            await interaction.followup.send(f"❌ Could not find user `{content}` in this server.", ephemeral=True)
-            return
+            return await interaction.followup.send(f"❌ Could not find user `{content}` in this server.", ephemeral=True)
+    
+        # Prevent self-vouch
+        if interaction.user.id == target.id:
+            return await interaction.followup.send("❌ You can't vouch yourself!", ephemeral=True)
 
+        # prevent double vouching
+        if has_vouched(interaction.user.id, target.id):
+            return await interaction.followup.send("❌ You've already vouched this user!", ephemeral=True)
+    
+        reason = self.reason.value.strip() or "No reason provided"
+    
+        # Prepare Fake Context for compatibility
         class FakeCtx:
             def __init__(self, user, guild, channel):
                 self.author = user
                 self.guild = guild
                 self.channel = channel
                 self.send_output = StringIO()
-
+    
             async def send(self, content=None, **kwargs):
                 self.send_output.write(content or "")
-
+    
         ctx = FakeCtx(interaction.user, guild, interaction.channel)
-
+    
         try:
-            reason_text = self.reason.value.strip() or "No reason provided"
-            await self.bot.get_command("vouch").callback(ctx, target, reason=reason_text)
-        
-            # Build confirmation message
-            confirmation = (
-                f"✅ Vouch sent to **{target.display_name}**\n"
-                f"📄 Reason: *{reason_text}*"
-            )
-            await interaction.followup.send(confirmation, ephemeral=True)
-        
+            await self.bot.get_command("vouch").callback(ctx, target, reason=reason)
+            output = ctx.send_output.getvalue()
+    
+            if not output:
+                output = f"✅ Vouch sent to **{target.display_name}**\n📄 Reason: *{reason}*"
+    
+            await interaction.followup.send(output, ephemeral=True)
+    
         except Exception as e:
             print(f"[VouchModal error] {e}")
             await interaction.followup.send("❌ Failed to process vouch.", ephemeral=True)
-
 
 
 class VouchButtonView(discord.ui.View):
