@@ -406,9 +406,9 @@ async def vouch(ctx, member: discord.Member, *, reason: str = "No reason provide
             # Cooldown check
             cooldown = db_fetchone("SELECT last_vouch_time FROM vouch_cooldowns WHERE user_id = ?", (ctx.author.id,))
             if cooldown and cooldown[0]:
-                remaining = 24 - (time.time() - cooldown[0])//3600
+                remaining = 180 - (time.time() - cooldown[0])
                 if remaining > 0:
-                    return await ctx.send(f"❌ You can vouch again in {int(remaining)} hours!")
+                    return await ctx.send(f"❌ You can vouch again in {int(remaining // 60)} minutes and {int(remaining % 60)} seconds!")
         
         # Original validations
         if not admin:
@@ -990,10 +990,10 @@ async def myvouches(ctx):
     
     msg = f"You have {count} legitimate vouches"
     if cooldown and cooldown[0]:
-        remaining = max(0, 24 - (time.time() - cooldown[0])//3600)
+        remaining = max(0, 180 - (time.time() - cooldown[0]))
         if remaining > 0:
-            msg += f"\n⏳ You can vouch again in {int(remaining)} hours"
-    
+            msg += f"\n⏳ You can vouch again in {int(remaining // 60)}m {int(remaining % 60)}s"
+            
     await ctx.send(msg)
 
 @bot.command()
@@ -1098,8 +1098,8 @@ async def slash_myvouches(interaction: Interaction):
 @bot.tree.command(name="setconfig", description="[OWNER] Set a config value")
 @app_commands.describe(setting="Which setting to change", value="New value (channel ID or role IDs)")
 async def slash_setconfig(interaction: Interaction, setting: str, value: str):
-    if interaction.user.id != bot.owner_id:
-        await interaction.response.send_message("❌ Only the bot owner can use this command.", ephemeral=True)
+    if interaction.user.id != interaction.guild.owner_id:
+        await interaction.response.send_message("❌ Only the server owner can use this command.", ephemeral=True)
         return
 
     ctx = await bot.get_context(interaction)
@@ -1119,6 +1119,112 @@ async def slash_setupvouchticket(interaction: Interaction):
     except Exception as e:
         print(f"[Slash SetupVouchTicket Error] {e}")
         await interaction.response.send_message("❌ Could not set up vouch ticket.", ephemeral=True)
+
+@bot.tree.command(name="verify", description="Verify vouch count for a user (or yourself)")
+@app_commands.describe(member="Optional: check another member's vouch status")
+async def slash_verify(interaction: Interaction, member: Member = None):
+    ctx = await bot.get_context(interaction)
+    ctx.author = interaction.user
+    ctx.guild = interaction.guild
+    try:
+        await bot.get_command("verify").callback(ctx, member or interaction.user)
+        await interaction.response.defer()  # Defer to avoid timeout
+    except Exception as e:
+        print(f"[Slash Verify Error] {e}")
+        await interaction.response.send_message("❌ Could not verify vouch count.", ephemeral=True)
+
+@bot.tree.command(name="help", description="List available commands")
+async def slash_help(interaction: Interaction):
+    help_text = (
+        "**🛠️ Available Commands:**\n\n"
+        "• `/vouch` — Vouch for a user\n"
+        "• `/enablevouch` — Enable vouch tracking\n"
+        "• `/disablevouch` — Disable vouch tracking\n"
+        "• `/myvouches` — View your vouch count and cooldown\n"
+        "• `/verify` — Check vouch authenticity and status\n"
+        "• `/setconfig` — Configure bot (Server Owner only)\n"
+        "• `/setupvouchticket` — Post the vouch ticket button (Admins only)\n"
+        "\nType the slash `/` to see full autocomplete!"
+    )
+    await interaction.response.send_message(help_text, ephemeral=True)
+
+@bot.tree.command(name="unvouchable", description="[ADMIN] Toggle unvouchable status for a user")
+@app_commands.describe(member="User to modify", action="Enable or disable unvouchable status (on/off)")
+async def slash_unvouchable(interaction: Interaction, member: Member, action: str = "on"):
+    ctx = await bot.get_context(interaction)
+    ctx.author = interaction.user
+    if not is_admin(ctx):
+        await interaction.response.send_message("❌ Admins only.", ephemeral=True)
+        return
+    await bot.get_command("unvouchable").callback(ctx, member, action)
+    await interaction.response.defer()
+
+@bot.tree.command(name="unvouchable_list", description="[ADMIN] List all unvouchable users")
+async def slash_unvouchable_list(interaction: Interaction):
+    ctx = await bot.get_context(interaction)
+    ctx.author = interaction.user
+    if not is_admin(ctx):
+        await interaction.response.send_message("❌ Admins only.", ephemeral=True)
+        return
+    await bot.get_command("unvouchable_list").callback(ctx)
+    await interaction.response.defer()
+
+@bot.tree.command(name="setvouches", description="[ADMIN] Set a user's vouch count")
+@app_commands.describe(member="User to modify", count="New vouch count")
+async def slash_setvouches(interaction: Interaction, member: Member, count: int):
+    ctx = await bot.get_context(interaction)
+    ctx.author = interaction.user
+    if not is_admin(ctx):
+        await interaction.response.send_message("❌ Admins only.", ephemeral=True)
+        return
+    await bot.get_command("setvouches").callback(ctx, member, count)
+    await interaction.response.defer()
+
+@bot.tree.command(name="clearvouches", description="[ADMIN] Reset a user's vouches")
+@app_commands.describe(member="User to reset")
+async def slash_clearvouches(interaction: Interaction, member: Member):
+    ctx = await bot.get_context(interaction)
+    ctx.author = interaction.user
+    if not is_admin(ctx):
+        await interaction.response.send_message("❌ Admins only.", ephemeral=True)
+        return
+    await bot.get_command("clearvouches").callback(ctx, member)
+    await interaction.response.defer()
+
+@bot.tree.command(name="clearvouches_all", description="[ADMIN] Reset all vouches in the server")
+async def slash_clearvouches_all(interaction: Interaction):
+    ctx = await bot.get_context(interaction)
+    ctx.author = interaction.user
+    if not is_admin(ctx):
+        await interaction.response.send_message("❌ Admins only.", ephemeral=True)
+        return
+    await bot.get_command("clearvouches_all").callback(ctx)
+    await interaction.response.defer()
+
+@bot.tree.command(name="vouch_sources", description="See who vouched for a user")
+@app_commands.describe(member="User to check")
+async def slash_vouch_sources(interaction: Interaction, member: Member):
+    ctx = await bot.get_context(interaction)
+    ctx.author = interaction.user
+    await bot.get_command("vouch_sources").callback(ctx, member)
+    await interaction.response.defer()
+
+@bot.tree.command(name="vouchboard", description="Show top vouched members")
+@app_commands.describe(limit="Number of users to display (default 10)")
+async def slash_vouchboard(interaction: Interaction, limit: int = 10):
+    ctx = await bot.get_context(interaction)
+    ctx.author = interaction.user
+    await bot.get_command("vouchboard").callback(ctx, limit)
+    await interaction.response.defer()
+
+@bot.tree.command(name="vouchstats", description="View vouch tracking stats")
+@app_commands.describe(display="Show user count or list ('count' or 'list')")
+async def slash_vouchstats(interaction: Interaction, display: str = "count"):
+    ctx = await bot.get_context(interaction)
+    ctx.author = interaction.user
+    await bot.get_command("vouchstats").callback(ctx, display)
+    await interaction.response.defer()
+
 
 @bot.event
 async def on_ready():
