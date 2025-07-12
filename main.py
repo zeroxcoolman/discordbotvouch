@@ -252,52 +252,54 @@ class VouchModal(ui.Modal, title="Submit a Vouch"):
         self.interaction = interaction
 
     async def on_submit(self, interaction: discord.Interaction):
-        # Try to resolve the user by mention or name
         guild = interaction.guild
         target = None
         content = self.person_name.value.strip()
 
-        if len(interaction.message.mentions) > 0:
-            target = interaction.message.mentions[0]
+        match = re.match(r'<@!?(\d+)>', content)
+        if match:
+            target_id = int(match.group(1))
+            target = guild.get_member(target_id)
         else:
-            match = re.match(r'<@!?(\d+)>', content)
-            if match:
-                target_id = int(match.group(1))
-                target = guild.get_member(target_id)
-            else:
-                for member in guild.members:
-                    if member.name.lower() == content.lower():
-                        target = member
-                        break
+            for member in guild.members:
+                if member.name.lower() == content.lower():
+                    target = member
+                    break
 
         if not target:
-            await interaction.response.send_message(f"❌ Could not find user `{content}` in this server.", ephemeral=True)
+            try:
+                await interaction.response.send_message(f"❌ Could not find user `{content}`.", ephemeral=True)
+            except discord.NotFound:
+                await interaction.followup.send(f"❌ Could not find user `{content}`.", ephemeral=True)
             return
 
-        ctx = await self.bot.get_context(interaction.message)
-        ctx.author = interaction.user
-        ctx.guild = guild
-        ctx.channel = interaction.channel
+        class FakeCtx:
+            def __init__(self, user, guild, channel):
+                self.author = user
+                self.guild = guild
+                self.channel = channel
+                self.send_output = StringIO()
 
-        old_send = ctx.send
-        output_buffer = StringIO()
+            async def send(self, content=None, **kwargs):
+                self.send_output.write(content or "")
 
-        async def capture_send(content=None, **kwargs):
-            output_buffer.write(content or "")
-        ctx.send = capture_send
+        ctx = FakeCtx(interaction.user, guild, interaction.channel)
 
         try:
-            await self.bot.get_command('vouch').callback(ctx, target, reason=self.reason.value or "No reason provided")
-            response_text = output_buffer.getvalue()
-            if "✅" in response_text:
-                await interaction.response.send_message(f"✅ Vouch submitted for {target.mention}.", ephemeral=True)
-            else:
-                await interaction.response.send_message(response_text, ephemeral=True)
+            await self.bot.get_command("vouch").callback(ctx, target, reason=self.reason.value or "No reason provided")
+            response = ctx.send_output.getvalue() or "✅ Vouch submitted."
+
+            try:
+                await interaction.response.send_message(response, ephemeral=True)
+            except discord.NotFound:
+                await interaction.followup.send(response, ephemeral=True)
+
         except Exception as e:
-            await interaction.response.send_message("❌ Failed to process vouch.", ephemeral=True)
-            print(f"VouchModal error: {e}")
-        finally:
-            ctx.send = old_send
+            print(f"[VouchModal error] {e}")
+            try:
+                await interaction.response.send_message("❌ Failed to process vouch.", ephemeral=True)
+            except discord.NotFound:
+                await interaction.followup.send("❌ Failed to process vouch.", ephemeral=True)
 
 class VouchButtonView(discord.ui.View):
     def __init__(self, bot):
