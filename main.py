@@ -287,12 +287,20 @@ class VouchModal(ui.Modal, title="Submit a Vouch"):
         ctx = FakeCtx(interaction.user, guild, interaction.channel)
 
         try:
-            await self.bot.get_command("vouch").callback(ctx, target, reason=self.reason.value or "No reason provided")
-            response = ctx.send_output.getvalue() or f"✅ Vouch submitted for {target.mention}."
-            await interaction.followup.send(response, ephemeral=True)
+            reason_text = self.reason.value.strip() or "No reason provided"
+            await self.bot.get_command("vouch").callback(ctx, target, reason=reason_text)
+        
+            # Build confirmation message
+            confirmation = (
+                f"✅ Vouch sent to **{target.display_name}**\n"
+                f"📄 Reason: *{reason_text}*"
+            )
+            await interaction.followup.send(confirmation, ephemeral=True)
+        
         except Exception as e:
             print(f"[VouchModal error] {e}")
             await interaction.followup.send("❌ Failed to process vouch.", ephemeral=True)
+
 
 
 class VouchButtonView(discord.ui.View):
