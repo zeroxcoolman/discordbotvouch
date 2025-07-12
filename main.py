@@ -251,7 +251,7 @@ class VouchModal(ui.Modal, title="Submit a Vouch"):
         self.bot = bot
         self.interaction = interaction
 
-        async def on_submit(self, interaction: discord.Interaction):
+    async def on_submit(self, interaction: discord.Interaction):
         await interaction.response.defer(thinking=True, ephemeral=True)  # ⬅️ Key line to prevent timeout
 
         guild = interaction.guild
