@@ -303,6 +303,69 @@ class VouchButtonView(discord.ui.View):
     @discord.ui.button(label="Submit A Vouch", style=discord.ButtonStyle.primary, emoji="🎟️",custom_id="submit_vouch_button")
     async def submit_vouch_button(self, interaction: discord.Interaction, button: discord.ui.Button):
         await interaction.response.send_modal(VouchModal(self.bot, interaction))
+        
+class AdminActionView(discord.ui.View):
+    def __init__(self, member_id):
+        super().__init__(timeout=None)  # Persistent view
+        self.member_id = member_id
+        self.action_taken = False
+        self.action_by = None
+        self.add_item(AdminActionButton("✅ Confirm", discord.ButtonStyle.green, "confirm"))
+        self.add_item(AdminActionButton("❌ Reject", discord.ButtonStyle.red, "reject"))
+
+    async def disable_all_buttons(self):
+        for item in self.children:
+            if isinstance(item, discord.ui.Button):
+                item.disabled = True
+        self.action_taken = True
+        return self
+
+class AdminActionButton(discord.ui.Button):
+    def __init__(self, label, style, custom_id):
+        super().__init__(
+            label=label,
+            style=style,
+            custom_id=f"admin_action:{custom_id}",
+            row=0
+        )
+
+    async def callback(self, interaction: discord.Interaction):
+        view = self.view  # Get the parent view
+        if view.action_taken:
+            return await interaction.response.send_message(
+                f"❌ Action already taken by {view.action_by.mention}",
+                ephemeral=True
+            )
+
+        # Mark action as taken
+        view.action_by = interaction.user
+        await view.disable_all_buttons()
+
+        # Update the original message
+        embed = interaction.message.embeds[0]
+        embed.color = discord.Color.green() if self.custom_id.endswith("confirm") else discord.Color.red()
+        embed.add_field(
+            name="Action Taken",
+            value=f"{self.label} by {interaction.user.mention}",
+            inline=False
+        )
+
+        await interaction.message.edit(embed=embed, view=view)
+        
+        # Handle the actual action (reset vouches, etc.)
+        member = interaction.guild.get_member(view.member_id)
+        if member:
+            if self.custom_id.endswith("confirm"):
+                # Reset fake vouches
+                db_execute("UPDATE vouches SET vouch_count = 0 WHERE user_id = ?", (member.id,))
+                await member.edit(nick=clean_nickname(member.display_name))
+                await interaction.followup.send(
+                    f"✅ {member.mention}'s vouches have been reset by {interaction.user.mention}"
+                )
+            else:
+                await interaction.followup.send(
+                    f"❌ {member.mention}'s vouches were NOT reset (action by {interaction.user.mention})"
+                )
 
 # COMMANDS
 
@@ -917,66 +980,41 @@ async def verify(ctx, member: discord.Member = None):
     await ctx.send("\n".join(response))
 
 async def notify_admins(guild, member, reason):
-    """Send alerts to admins via DM or staff channel"""
-    _, admin_roles_id = get_config(guild.id)
-    recipients = list({m for role in guild.roles
-                        if role.id in admin_roles_id
-                        for m in role.members
-                        if not m.bot})
-
-    # Get the staff channel
     _, admin_roles = get_config(guild.id)
     staff_channel = get_staff_channel(guild)
-
     
     embed = discord.Embed(
-        title="🚨 Vouch Verification Alert",
-        color=discord.Color.red()
+        title="🚨 Fake Vouch Tags Detected",
+        color=discord.Color.orange(),
+        description=f"**Member:** {member.mention}\n**Issue:** {reason}"
     )
-    embed.add_field(name="Member", value=member.mention, inline=False)
-    embed.add_field(name="Issue", value=reason, inline=False)
-    embed.add_field(name="Action Required", value="Please verify and respond with ✅ to reset or ❌ to ignore", inline=False)
+    embed.set_thumbnail(url=member.display_avatar.url)
+    embed.add_field(
+        name="Action Required",
+        value="Review and choose an action below:",
+        inline=False
+    )
+
+    view = AdminActionView(member.id)
     
-    # Try DMing each admin
-    notified = False
-    for admin in recipients:
+    # Try to send to staff channel first
+    if staff_channel:
         try:
-            msg = await admin.send(embed=embed)
-            await msg.add_reaction("✅")
-            await msg.add_reaction("❌")
-            
-            # Track this notification
-            if not hasattr(bot, 'discrepancy_notifications'):
-                bot.discrepancy_notifications = {}
-            bot.discrepancy_notifications[msg.id] = {
-                'admin_id': admin.id,
-                'member_id': member.id,
-                'timestamp': time.time()
-            }
-            notified = True
+            await staff_channel.send(
+                content=f"Attention <@&{admin_roles[0]}>" if admin_roles else "",
+                embed=embed,
+                view=view
+            )
+            return
+        except discord.HTTPException:
+            pass
+
+    # Fallback to DM admins
+    for admin in [m for role in admin_roles for m in guild.get_role(role).members]:
+        try:
+            await admin.send(embed=embed, view=view)
         except discord.Forbidden:
             continue
-    
-    # Fallback to staff channel if DMs failed
-    if not notified and staff_channel:
-        try:
-            msg = await staff_channel.send(
-                content=" ".join(m.mention for m in recipients),
-                embed=embed
-            )
-            await msg.add_reaction("✅")
-            await msg.add_reaction("❌")
-            
-            # Track channel notification differently
-            bot.discrepancy_notifications[msg.id] = {
-                'admin_id': guild.me.id,  # Mark as channel message
-                'member_id': member.id,
-                'timestamp': time.time()
-            }
-        except discord.Forbidden:
-            print(f"Failed to send to {STAFF_CHANNEL_NAME}")
-        except discord.HTTPException as e:
-            print(f"Channel notification failed: {e}")
 
 @bot.command()
 async def myvouches(ctx):
@@ -1230,6 +1268,7 @@ async def on_ready():
     await bot.tree.sync()
     print(f"Slash commands synced as {bot.user.name}")
     
+    bot.add_view(AdminActionView(None))
     bot.add_view(VouchButtonView(bot))
     bot.loop.create_task(clean_old_notifications())
 
