@@ -1,0 +1,12 @@
+[phases.setup]
+nix_pkgs = ["python311"]  # Explicit Python version
+
+[phases.install]
+cache_directories = ["/opt/venv"]  # Cache dependencies
+commands = [
+  "python -m pip install --upgrade pip",
+  "pip install --user -r requirements.txt"
+]
+
+[start]
+run = "python main.py"  # Explicit start command
