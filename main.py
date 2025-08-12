@@ -306,66 +306,99 @@ class VouchButtonView(discord.ui.View):
         
 class AdminActionView(discord.ui.View):
     def __init__(self, member_id):
-        super().__init__(timeout=None)  # Persistent view
+        super().__init__(timeout=86400)  # 24h timeout
         self.member_id = member_id
         self.action_taken = False
         self.action_by = None
-        self.add_item(AdminActionButton("✅ Confirm", discord.ButtonStyle.green, "confirm"))
-        self.add_item(AdminActionButton("❌ Reject", discord.ButtonStyle.red, "reject"))
+        
+        # Add buttons directly in __init__
+        self.add_item(discord.ui.Button(
+            style=discord.ButtonStyle.green,
+            label="✅ Confirm",
+            custom_id=f"admin_confirm:{member_id}"
+        ))
+        self.add_item(discord.ui.Button(
+            style=discord.ButtonStyle.red,
+            label="❌ Reject",
+            custom_id=f"admin_reject:{member_id}"
+        ))
 
     async def disable_all_buttons(self):
         for item in self.children:
             if isinstance(item, discord.ui.Button):
                 item.disabled = True
-        self.action_taken = True
         return self
 
 class AdminActionButton(discord.ui.Button):
-    def __init__(self, label, style, custom_id):
+    def __init__(self, action_type: str):
         super().__init__(
-            label=label,
-            style=style,
-            custom_id=f"admin_action:{custom_id}",
+            style=discord.ButtonStyle.green if action_type == "confirm" else discord.ButtonStyle.red,
+            label="✅ Confirm" if action_type == "confirm" else "❌ Reject",
+            custom_id=f"admin_{action_type}",  # Persistent ID format
             row=0
         )
-
+        self.action_type = action_type
+    
     async def callback(self, interaction: discord.Interaction):
-        view = self.view  # Get the parent view
+        view = self.view
         if view.action_taken:
-            return await interaction.response.send_message(
-                f"❌ Action already taken by {view.action_by.mention}",
-                ephemeral=True
-            )
+            try:
+                return await interaction.response.send_message(
+                    f"❌ Action already taken by {view.action_by.mention}",
+                    ephemeral=True
+                )
+            except:
+                return  # Fail silently if interaction fails
 
-        # Mark action as taken
         view.action_by = interaction.user
-        await view.disable_all_buttons()
-
-        # Update the original message
-        embed = interaction.message.embeds[0]
-        embed.color = discord.Color.green() if self.custom_id.endswith("confirm") else discord.Color.red()
-        embed.add_field(
-            name="Action Taken",
-            value=f"{self.label} by {interaction.user.mention}",
-            inline=False
-        )
-
-        await interaction.message.edit(embed=embed, view=view)
         
-        # Handle the actual action (reset vouches, etc.)
-        member = interaction.guild.get_member(view.member_id)
-        if member:
-            if self.custom_id.endswith("confirm"):
-                # Reset fake vouches
-                db_execute("UPDATE vouches SET vouch_count = 0 WHERE user_id = ?", (member.id,))
-                await member.edit(nick=clean_nickname(member.display_name))
-                await interaction.followup.send(
-                    f"✅ {member.mention}'s vouches have been reset by {interaction.user.mention}"
+        try:
+            # Acknowledge interaction first
+            await interaction.response.defer()
+            
+            # Update original message
+            embed = interaction.message.embeds[0]
+            embed.color = discord.Color.green() if "confirm" in self.custom_id else discord.Color.red()
+            embed.add_field(
+                name="Action Taken",
+                value=f"{self.label} by {interaction.user.mention}",
+                inline=False
+            )
+            
+            await interaction.message.edit(embed=embed, view=await view.disable_all_buttons())
+            
+            # Handle the action
+            member = interaction.guild.get_member(view.member_id)
+            if member:
+                if "confirm" in self.custom_id:
+                    db_execute("UPDATE vouches SET vouch_count = 0 WHERE user_id = ?", (member.id,))
+                    await member.edit(nick=clean_nickname(member.display_name))
+                    
+                # Send to staff channel if available
+                staff_channel = get_staff_channel(interaction.guild)
+                msg = (
+                    f"✅ {member.mention}'s vouches reset by {interaction.user.mention}" 
+                    if "confirm" in self.custom_id else
+                    f"❌ Action rejected by {interaction.user.mention}"
                 )
-            else:
-                await interaction.followup.send(
-                    f"❌ {member.mention}'s vouches were NOT reset (action by {interaction.user.mention})"
+                
+                if staff_channel:
+                    await staff_channel.send(msg)
+                else:
+                    try:
+                        await interaction.followup.send(msg, ephemeral=False)
+                    except:
+                        pass  # Fallback silent
+            
+        except discord.NotFound:
+            # Message was deleted, send to channel instead
+            staff_channel = get_staff_channel(interaction.guild)
+            if staff_channel:
+                await staff_channel.send(
+                    f"Action taken on deleted alert by {interaction.user.mention}: {self.label}"
                 )
+        except Exception as e:
+            print(f"Button error: {type(e).__name__} - {str(e)}")
 
 # COMMANDS
 
@@ -1268,7 +1301,7 @@ async def on_ready():
     await bot.tree.sync()
     print(f"Slash commands synced as {bot.user.name}")
     
-    bot.add_view(AdminActionView(None))
+    bot.add_view(AdminActionView(member_id=0))
     bot.add_view(VouchButtonView(bot))
     bot.loop.create_task(clean_old_notifications())
 
