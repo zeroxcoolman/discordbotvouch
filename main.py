@@ -649,8 +649,6 @@ async def setvouches(ctx, member: discord.Member, count: int):
 @bot.command()
 async def enablevouch(ctx):
     """Enable vouch tracking"""
-    if not is_admin(ctx) and ctx.channel.name != "✅︱𝑽𝒐𝒖𝒄𝒉𝒆𝒔":
-        return await ctx.send("❌ Use the vouch channel!")
     
     if not db_execute("""
     INSERT INTO vouches (user_id, tracking_enabled) VALUES (?, 1) 
@@ -664,8 +662,6 @@ async def enablevouch(ctx):
 @bot.command()
 async def disablevouch(ctx):
     """Disable vouch tracking"""
-    if not is_admin(ctx) and ctx.channel.name != "✅︱𝑽𝒐𝒖𝒄𝒉𝒆𝒔":
-        return await ctx.send("❌ Use the vouch channel!")
     
     if not db_execute("UPDATE vouches SET tracking_enabled = 0 WHERE user_id = ?", (ctx.author.id,)):
         return await ctx.send("❌ Database error!")
