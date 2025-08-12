@@ -10,12 +10,9 @@ import sqlite3
 import os
 import time
 import asyncio
-from flask import Flask
 from threading import Thread
 from io import StringIO
 import json
-
-app = Flask(__name__)
 
 @app.route('/')
 def home():
@@ -24,10 +21,6 @@ def home():
 def run():
     PORT = int(os.environ.get("PORT", 8080))
     app.run(host="0.0.0.0", port=PORT)
-
-def keep_alive():
-    t = Thread(target=run)
-    t.start()
 
 # Setup bot
 TOKEN = os.environ.get('DISCORD_BOT_TOKEN')
@@ -1410,6 +1403,6 @@ async def on_raw_reaction_add(payload):
         print(f"Reaction handling error: {e}")
         if payload.message_id in bot.discrepancy_notifications:
             del bot.discrepancy_notifications[payload.message_id]
-
-keep_alive()
+            
+            
 bot.run(TOKEN)
