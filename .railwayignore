@@ -1,0 +1,9 @@
+# File patterns to exclude from deployment
+*.db
+__pycache__/
+*.py[cod]
+*.log
+.env
+.DS_Store
+/tests
+/venv
