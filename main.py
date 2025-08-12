@@ -1142,11 +1142,12 @@ async def slash_verify(interaction: Interaction, member: Member = None):
     ctx.author = interaction.user
     ctx.guild = interaction.guild
     try:
+        await interaction.response.defer(thinking=True)
         await bot.get_command("verify").callback(ctx, member or interaction.user)
-        await interaction.response.defer()  # Defer to avoid timeout
     except Exception as e:
         print(f"[Slash Verify Error] {e}")
-        await interaction.response.send_message("❌ Could not verify vouch count.", ephemeral=True)
+        if not interaction.response.is_done():
+            await interaction.followup.send("❌ Could not verify vouch count.", ephemeral=True)
 
 @bot.tree.command(name="help", description="List available commands")
 async def slash_help(interaction: Interaction):
