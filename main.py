@@ -358,7 +358,7 @@ class AdminActionButton(discord.ui.Button):
         else:
             msg = f"❌ Action rejected by {interaction.user.mention}"
         
-        await interaction.followup.send(msg)
+        await interaction.channel.send(f"✅ Action confirmed by {interaction.user.mention}")
 
 # COMMANDS
 
